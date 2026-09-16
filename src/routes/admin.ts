@@ -1,10 +1,3 @@
-// Web admin: allowed-tags and allowlist editing, backed by KV. For users in
-// the `admins` KV key only — that key itself is never editable here (CLI
-// only). Non-admins get 404 (not 403) so the surface's existence isn't
-// disclosed. Ported from the parent's lib/routes/admin.ts; the name/avatar
-// row decoration moved to client JS (views/admin.eta) so the server does no
-// relay/PDS lookups.
-
 import type { Context, Hono } from "hono";
 import type { AppEnv } from "../env.ts";
 import { ATPROTO_DID_RE, ATPROTO_HANDLE_RE, getConfig } from "../config.ts";
@@ -13,6 +6,7 @@ import {
   isAdmin,
   isLoginEnabled,
   loadAllowedTags,
+  loadAdmins,
   loadAllowlist,
   normalizeTag,
   removeListEntry,
@@ -21,6 +15,10 @@ import { decodeNpub, isNostrAllowlistEntry, rateLimit } from "../nostr.ts";
 import { htmlResponse, render } from "../render.ts";
 import type { UnifiedSession } from "../session.ts";
 import { isSameOriginRequest } from "../session.ts";
+
+import { getStore } from "../storage/index.ts";
+import { CUSTOM_SLOTS } from "../storage/types.ts";
+import { normalizeIdentity } from "../storage/identity.ts";
 
 const MAX_ENTRY_LEN = 300;
 const MAX_BODY_BYTES = 8192;
@@ -55,8 +53,7 @@ export function registerAdminRoutes(authed: Hono<AppEnv>): void {
     const user = c.get("user") as UnifiedSession;
     const setCookieHeader = c.get("setCookieHeader") as string;
     const cfg = getConfig(c.env);
-    // Fresh reads: the admin must see their own writes immediately, not the
-    // 60 s edge cache.
+    // SQL reads observe the primary; legacy KV retains eventual consistency.
     const [allowlist, tags] = await Promise.all([
       loadAllowlist(c.env, { fresh: true }),
       loadAllowedTags(c.env, { fresh: true }),
@@ -69,6 +66,9 @@ export function registerAdminRoutes(authed: Hono<AppEnv>): void {
         loginEnabled: await isLoginEnabled(c.env),
         sidebar: true,
         allowlistEntries: [...allowlist],
+        adminEntries: [...await loadAdmins(c.env)],
+        editableStore: getStore(c.env).editable,
+        customSlots: await Promise.all(CUSTOM_SLOTS.map(async name => ({name, html: await getStore(c.env).custom(name)}))),
         allowedTags: [...tags].sort(),
         forceAllowTagless: cfg.forceAllowTagless,
         // The identifiers of the logged-in admin, so the UI can warn before
@@ -104,8 +104,9 @@ export function registerAdminRoutes(authed: Hono<AppEnv>): void {
   };
 
   const kvError = (c: Context<AppEnv>, err: unknown): Response => {
-    console.error("[admin] KV write failed:", err);
-    return c.json({ error: "could not write to KV" }, 500);
+    if (String(err).includes("last Nostr administrator")) return c.json({ error: "Cannot remove the last administrator." }, 409);
+    console.error("[admin] storage write failed:", err);
+    return c.json({ error: "could not update configuration" }, 500);
   };
 
   authed.post("/admin/tags/add", async (c) => {
@@ -209,4 +210,32 @@ export function registerAdminRoutes(authed: Hono<AppEnv>): void {
       entries: [...await loadAllowlist(c.env, { fresh: true })],
     });
   });
+  for (const action of ["add", "remove"] as const) {
+    authed.post(`/admin/admins/${action}`, async c => {
+      const guard = adminPostGuard(c, c.get("user"));
+      if (guard) return guard;
+      const store = getStore(c.env);
+      if (!store.editable) return c.json({error:"Migrate to SQL to manage administrators."},409);
+      const body = await readJsonBody(c);
+      let entry: string;
+      try { entry = normalizeIdentity(typeof body?.entry === "string" ? body.entry : "", action === "add"); }
+      catch { return c.json({error:"Enter a valid public key."},400); }
+      try { await store[action]("admins",entry); }
+      catch(err) { return kvError(c,err); }
+      return c.json({ok:true,entries:await store.list("admins")});
+    });
+  }
+  authed.post("/admin/custom", async c => {
+    const guard = adminPostGuard(c,c.get("user"));
+    if (guard) return guard;
+    if (!getStore(c.env).editable) return c.json({error:"Migrate to SQL to edit HTML."},409);
+    const body = await readJsonBody(c);
+    if (typeof body?.slot !== "string" || !(CUSTOM_SLOTS as readonly string[]).includes(body.slot) || typeof body.html !== "string") {
+      return c.json({error:"Invalid HTML slot or content."},400);
+    }
+    try { await getStore(c.env).setCustom(body.slot,body.html); }
+    catch(err) { return kvError(c,err); }
+    return c.json({ok:true});
+  });
+
 }

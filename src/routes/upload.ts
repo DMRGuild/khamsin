@@ -4,7 +4,7 @@
 // Everything else (Arweave uploads, record publishing, deletion) is fully
 // client-side and needs no route here.
 //
-// Pin ownership registry: every successful pin writes `pin:<cid>` to KV
+// Pin ownership registry: every successful pin writes a pin ownership record to storage
 // ({ uploader pubkey, Pinata file id, … }). POST /unpin verifies the
 // session against that entry before deleting from Pinata — the workers-port
 // stand-in for the parent's unpin-on-delete (the server can't watch the
@@ -25,25 +25,9 @@ import { pinFile, unpinFile } from "../pinata.ts";
 import type { UnifiedSession } from "../session.ts";
 import { isSameOriginRequest } from "../session.ts";
 
-interface PinRecord {
-  /** Hex pubkey of the nostr session that uploaded the file. */
-  uploader: string;
-  npub?: string;
-  /** Pinata v3 file id (used for deletion); null for legacy entries. */
-  id: string | null;
-  fileName?: string;
-  size?: number;
-  at: number;
-}
-
-const pinKey = (cid: string) => `pin:${cid}`;
-
-async function readPin(env: Env, cid: string): Promise<PinRecord | null> {
-  const raw = await env.VON_KV.get(pinKey(cid), { type: "json" }) as
-    | PinRecord
-    | null;
-  return raw && typeof raw.uploader === "string" ? raw : null;
-}
+import { getStore } from "../storage/index.ts";
+import type { PinRecord } from "../storage/types.ts";
+const readPin = (env: Env, cid: string) => getStore(env).pin(cid);
 
 export function registerUploadRoutes(authed: Hono<AppEnv>): void {
   authed.post("/upload", async (c) => {
@@ -93,7 +77,7 @@ export function registerUploadRoutes(authed: Hono<AppEnv>): void {
             size: file.size,
             at: Date.now(),
           };
-          await c.env.VON_KV.put(pinKey(cid), JSON.stringify(entry));
+          await getStore(c.env).claimPin(cid, entry);
         }
       }
       return c.json({ ok: true, cid, fileName: file.name, size: file.size });
@@ -146,7 +130,7 @@ export function registerUploadRoutes(authed: Hono<AppEnv>): void {
       console.error("[unpin] failed:", err);
       return c.json({ error: "unpin failed — try again later" }, 502);
     }
-    await c.env.VON_KV.delete(pinKey(cid));
+    await getStore(c.env).deletePin(cid, user.pubkey);
     return c.json({ ok: true });
   });
 }

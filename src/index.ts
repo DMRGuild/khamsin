@@ -1,12 +1,4 @@
-// von-workers — minimal von on Cloudflare Workers.
-//
-// The server renders shell pages (layout + skin + custom slots + auth state),
-// handles nostr login, serves the /api/authors JSON, edits KV from /admin,
-// and streams pandoc.wasm from R2. Everything data-shaped — the document
-// listing, record details, ticker, zaps, author names — is fetched and
-// verified in the browser, straight from the nostr relays and PDSes. The
-// server never opens a WebSocket and never holds nostr keys.
-
+// Shared application. Platform bindings are assembled by runtime entry points.
 import { Hono } from "hono";
 import type { AppEnv } from "./env.ts";
 import { getConfig } from "./config.ts";
@@ -28,36 +20,15 @@ app.use("*", async (c, next) => {
   if (getConfig(c.env).cookieSecretUnsafe) {
     console.error(
       "FATAL: COOKIE_SECRET is unset (or the dev default) and BASE_URL is " +
-        "not localhost. Set it with `wrangler secret put COOKIE_SECRET`.",
+        "not localhost. Set COOKIE_SECRET in your deployment environment.",
     );
     return c.text("server misconfigured", 500);
   }
   await next();
 });
 
-// pandoc.wasm from R2 (58 MB — too large for static assets), cached at the
-// edge so repeat loads don't touch the bucket.
-app.get("/gentou/pandoc.wasm", async (c) => {
-  // No R2 binding (bucket not provisioned yet): the viewer's pandoc
-  // conversion degrades gracefully on a 404.
-  if (!c.env.GENTOU_BUCKET) return c.notFound();
-  const cacheKey = new Request(new URL(c.req.url).origin + "/gentou/pandoc.wasm");
-  const cache = caches.default;
-  const hit = await cache.match(cacheKey);
-  if (hit) return hit;
-
-  const obj = await c.env.GENTOU_BUCKET.get("pandoc.wasm");
-  if (!obj) return c.notFound();
-  const res = new Response(obj.body, {
-    headers: {
-      "Content-Type": "application/wasm",
-      "Cache-Control": "public, max-age=31536000, immutable",
-      ...(obj.httpEtag ? { ETag: obj.httpEtag } : {}),
-    },
-  });
-  c.executionCtx.waitUntil(cache.put(cacheKey, res.clone()));
-  return res;
-});
+app.get("/gentou/pandoc.wasm", c =>
+  c.env.serveWasm ? c.env.serveWasm(c.req.raw) : c.notFound());
 
 // Public routes.
 registerAuthRoutes(app);

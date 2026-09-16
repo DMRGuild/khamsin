@@ -8,3 +8,8 @@ dist/
 src/templates.gen.mjs
 data/*.txt
 data/custom/*.html
+
+.state/
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal

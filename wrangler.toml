@@ -1,5 +1,5 @@
 name = "khamsin"
-main = "src/index.ts"
+main = "src/cloudflare.ts"
 compatibility_date = "2026-05-01"
 compatibility_flags = ["nodejs_compat"]
 workers_dev = true
@@ -13,6 +13,14 @@ watch_dir = "views"
 directory = "./public"
 binding = "ASSETS"
 
+# New installations use D1. Provision with `npx wrangler d1 create khamsin`.
+[[d1_databases]]
+binding = "DB"
+database_name = "khamsin"
+database_id = "00000000-0000-0000-0000-000000000000"
+migrations_dir = "migrations"
+
+# Legacy KV compatibility. Remove this block after migration to D1.
 [[kv_namespaces]]
 binding = "VON_KV"
 # Local development works without an ID. Before production deployment, run

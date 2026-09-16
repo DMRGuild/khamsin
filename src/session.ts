@@ -83,7 +83,7 @@ export function isSameOriginRequest(req: Request, env: Env): boolean {
 
 /** Client IP for rate limiting (Cloudflare sets CF-Connecting-IP). */
 export function clientIp(c: Context<AppEnv>): string {
-  return c.req.header("cf-connecting-ip") || "unknown";
+  return c.env.CLIENT_IP || "unknown";
 }
 
 /**

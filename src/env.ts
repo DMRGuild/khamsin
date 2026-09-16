@@ -1,15 +1,17 @@
-// Worker bindings + Hono context types. Secrets (COOKIE_SECRET, PINATA_JWT)
-// arrive through the same interface but must be set via `wrangler secret`,
-// never in wrangler.toml's [vars].
-
+// Runtime configuration; entry points supply platform services.
+import type { Store } from "./storage/types.ts";
 import type { UnifiedSession } from "./session.ts";
 
 export interface Env {
   // Bindings
-  VON_KV: KVNamespace;
+  STORE?: Store;
+  DB?: D1Database;
+  VON_KV?: KVNamespace;
   /** Absent until R2 is activated + the wrangler.toml block is uncommented. */
   GENTOU_BUCKET?: R2Bucket;
-  ASSETS: Fetcher;
+  ASSETS?: Fetcher;
+  CLIENT_IP?: string;
+  serveWasm?: (request: Request) => Promise<Response>;
 
   // Vars (wrangler.toml)
   BASE_URL?: string;

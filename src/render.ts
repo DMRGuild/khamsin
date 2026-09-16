@@ -1,5 +1,5 @@
 // The shared render() pipeline that wraps every page in the base layout,
-// ported from the parent's lib/render.ts. Custom HTML slots come from KV
+// ported from the parent's lib/render.ts. Custom HTML slots come from the configuration store
 // (edits apply without redeploy); skin CSS is a bundled string keyed by the
 // SKIN var and inlined into <head>, exactly like the parent.
 
@@ -65,7 +65,7 @@ export async function render(
     documentCollection: cfg.collection,
     loginEnabled: data.loginEnabled ?? null,
     // Newsgroup tags: the upload form's checkbox list. Re-read per render
-    // (KV edge cache ≤ 60 s) so admin edits show up quickly.
+    // so SQL admin edits appear on the next request.
     allowedTags: [...allowedTags].sort(),
     baseTag: cfg.baseTag,
     // Shows the /admin link in the authbar for admins only.

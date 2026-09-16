@@ -1,123 +1,186 @@
 # Khamsin
 
-A standalone, lightweight document archive for **Cloudflare Workers**. Derived
-from von's serverless edition; no parent checkout, Deno server, Docker, local
-IPFS node, or asset synchronization is needed.
+A browser-first document archive for **Cloudflare Workers or Linux/Node.js**.
+Browsers fetch records from Nostr relays and AT Protocol PDSes and verify Nostr
+signatures. Operator configuration lives in D1 or SQLite, with compatibility
+for existing Workers KV installations. No runtime `data/` directory is needed.
 
 [한국어 안내](README.ko.md)
 
-The Worker renders page shells and handles Nostr login. Browsers fetch records
-from Nostr relays and AT Protocol PDSes and verify Nostr signatures. Operator
-lists and custom HTML live in Workers KV. All five skins, browser scripts,
-icons, the Gentou viewer, and compressed Pandoc WASM are included in this repo.
-The ~16 MB gzip asset requires neither Git LFS nor R2.
+All five skins, browser scripts, icons, Gentou, and compressed Pandoc WASM are
+included. The gzip asset needs neither Git LFS nor R2.
 
-## Local quick start
+## Start here: register your administrator
 
-Requires Node.js 22+ and npm. Replace `<repository-url>` with this repository's
-published Git URL (the local extraction does not publish a remote).
+Requires **Node.js 22.13+** and npm. SQLite uses Node's built-in `node:sqlite`.
 
 ```sh
-git clone <repository-url> khamsin
-cd khamsin
 npm ci
 npm run setup
-# Put YOUR npub in BOTH data/admins.txt and data/allowlist.txt.
-npm run seed:local
+```
+
+The setup wizard asks for the environment and your **public Nostr key** (`npub`
+or 64-character hex). Never enter an `nsec` private key. It creates the database,
+registers the administrator and access permission together, and generates a
+local cookie secret. Re-running setup preserves the existing administrator,
+data, and secrets. No manual list editing or seeding is required.
+
+Choose **Cloudflare local** and then run:
+
+```sh
 npm run dev
 ```
 
-Open http://localhost:8787. `setup` creates a random local cookie secret and
-copies empty example lists only when files do not exist; it preserves your
-edits. Login requires a NIP-07 Nostr browser signer. An empty allowlist disables
-login; admins must also be allowlisted. Local configuration is ignored by Git,
-so a fresh clone does not grant anyone administrator access.
+Or choose **Linux / Node.js** and run:
+
+```sh
+npm run build:node
+npm start
+```
+
+Open http://localhost:8787, log in with a NIP-07 browser signer, and open `/admin`.
+You can edit allowed users, tags, administrators, and trusted HTML slots there.
+The last Nostr administrator cannot be removed. Revoking an administrator's
+access also revokes their administrator role; revoking only their role retains
+ordinary access. Nostr identities are stored as normalized hex keys.
+
+For unattended installation:
+
+```sh
+npm run setup -- --target sqlite --admin npub1YOUR_PUBLIC_KEY
+# Targets: sqlite, local (D1), remote (production D1).
+```
 
 ## Deploy to Cloudflare Workers
 
-1. Run the local setup above and configure your operator lists.
-2. Log in and create your own KV namespace:
+```sh
+npx wrangler login
+npx wrangler d1 create khamsin
+```
 
-   ```sh
-   npx wrangler login
-   npx wrangler kv namespace create VON_KV
-   ```
+Enable the `[[d1_databases]]` example in `wrangler.toml`, binding `DB`, and set
+`database_id` to the returned ID. Local setup enables this block with a local-only
+placeholder: replace it before production use. Remove the legacy
+`[[kv_namespaces]]` block for a new D1-only deployment. Set the Worker `name`,
+`BASE_URL` to your public HTTPS origin, and any site/skin variables.
 
-3. In `wrangler.toml`, uncomment `id` under `[[kv_namespaces]]` and replace it
-   with the returned namespace ID. Set `name` to your Worker name and `BASE_URL`
-   to `https://<worker-name>.<your-workers-subdomain>.workers.dev` (find your
-   subdomain in the Cloudflare dashboard), or your configured custom origin.
-   Customize `SITE_NAME`, `SITE_DESCRIPTION`, and `SKIN` as desired.
-4. Generate a production secret, then paste it into the secret prompt:
+```sh
+npm run setup -- --target remote
+node -e "console.log(require('node:crypto').randomBytes(32).toString('base64'))"
+npx wrangler secret put COOKIE_SECRET
+npm run check
+npm test
+npm run build
+npm run deploy
+```
 
-   ```sh
-   node -e "console.log(require('node:crypto').randomBytes(32).toString('base64'))"
-   npx wrangler secret put COOKIE_SECRET
-   ```
+Paste the generated secret into Wrangler's prompt. Local `.dev.vars` is never
+uploaded. Local and production databases are separate; register the production
+administrator explicitly. Setup applies migrations; on later schema updates run
+`npx wrangler d1 migrations apply DB --remote` before deployment.
 
-   Wrangler may offer to create the Worker before its first deployment; accept.
-   `.dev.vars` is local only and is never uploaded as production secrets.
-5. Seed production data and deploy:
-
-   ```sh
-   npm run seed:remote
-   npm run check
-   npm run build
-   npm run deploy
-   ```
-
-`seed:remote` **overwrites** existing KV keys for files present in `data/`.
-Use it for initial setup or intentional replacement: it can overwrite changes
-made through `/admin`. Missing files are skipped; an empty file clears a key.
-`npm run deploy` checks for a public HTTPS origin and a real namespace ID.
-There is no preconfigured account, custom domain, or existing production KV ID.
-
-For a custom domain, add a top-level `routes` entry before the TOML tables:
+For a custom domain, put a top-level entry before the TOML tables:
 
 ```toml
 routes = [{ pattern = "archive.example.org", custom_domain = true }]
 ```
 
-Also update `BASE_URL` to the exact public origin, with no path or trailing slash.
-The local `.dev.vars` keeps `BASE_URL=http://localhost:8787` for development.
-Cloudflare configuration references: [Wrangler](https://developers.cloudflare.com/workers/wrangler/configuration/)
-and [KV bindings](https://developers.cloudflare.com/kv/concepts/kv-bindings/).
+Set `BASE_URL` to that exact public origin, without a path or trailing slash.
 
-## Commands and customization
+## Run on a Linux server
 
-| Command | Purpose |
-| --- | --- |
-| `npm run setup` | Create missing local settings without overwriting them |
-| `npm run dev` | Compile templates and start local Workers runtime |
-| `npm run check` | TypeScript validation |
-| `npm run build` | Compile templates and dry-run the deployment into `dist/` |
-| `npm run deploy` | Validate configuration, compile templates, deploy |
-| `npm run seed:local` / `npm run seed:remote` | Replace local / production KV lists and HTML slots |
+`npm start` loads `.env` if present; existing process environment variables take
+precedence. Local setup writes `.env` only if it does not exist.
 
-The Wrangler build hook precompiles Eta templates (Workers disallows runtime
-code generation), including when using `npx wrangler dev` or `deploy` directly.
-Changes under `views/` trigger compilation during development.
+- `DATABASE_PATH`: defaults to `.state/khamsin.sqlite`. Use a persistent local
+  path such as `/var/lib/khamsin/khamsin.sqlite`, writable by the service user.
+  Set the same path for setup, import, export, and the server.
+- `BASE_URL`: public HTTPS origin in production.
+- `COOKIE_SECRET`: a unique random secret of at least 32 characters.
+- `HOST` / `PORT`: default `127.0.0.1:8787`.
+- `PUBLIC_DIR`: defaults to `./public`.
 
-- `data/allowlist.txt`: Nostr npubs/hex keys or AT Protocol handles/DIDs, one per
-  line. Nostr entries enable login; AT Protocol entries select authors to read.
-- `data/admins.txt`: Nostr administrators; also add them to the allowlist.
-- `data/tags.txt`: allowed newsgroup tags; empty means unrestricted.
-- `data/custom/*.html`: trusted HTML slots named `index`, `about`, `main-header`,
-  `main-footer`, `sidebar-header`, or `sidebar-footer`.
-- Lines starting with `#` and blank lines are ignored in text lists.
-- `/admin` edits allowlist and tags. Admins and HTML are CLI-managed. KV is
-  eventually consistent; updates may take ~60 seconds or more to propagate.
+Run from the project root with `dist/`, `public/`, and production dependencies
+available. Use systemd or your process supervisor, with a reverse proxy for TLS.
+Only the socket peer's address is trusted for Node rate limiting; behind a proxy,
+configure per-client rate limiting at that proxy. Forwarded IP headers are not
+trusted automatically. The application limiter remains best effort per process.
+SQLite is intended for one host with a persistent disk, not shared network disks.
+
+## Optional import and existing KV migration
+
+`data/` is now an **optional input**, not the source of truth. Import understands
+`allowlist.txt`, `admins.txt`, `tags.txt`, and `custom/{slot}.html`. Blank lines and
+`#` comments in lists are ignored. Missing files and empty lists make no changes.
+
+```sh
+# Preview only; explicit target prevents accidentally writing production.
+npm run config:import -- --target sqlite --from ./data
+# Apply the merge.
+npm run config:import -- --target sqlite --from ./data --apply
+```
+
+Lists merge without removing existing entries. Administrators also receive
+access permission. Existing HTML and pin ownership are preserved; use
+`--overwrite-html` to explicitly replace matching HTML (including empty HTML).
+This version deliberately provides merge imports only; remove entries through
+`/admin`. A revision check rejects concurrent target changes, and all imported
+rows are applied in one SQL statement.
+
+**For an existing deployment, import the current KV rather than stale files.**
+Existing KV-only deployments keep working until a `DB` binding is enabled.
+When both bindings exist, the application uses D1 exclusively; no fallback mixes
+the two stores. Pause admin edits and uploads during the migration:
+
+1. Back up the source KV with your existing operations tooling.
+2. Create/configure D1 while keeping `VON_KV` available in `wrangler.toml`.
+3. Run `npm run setup -- --target remote` with the intended administrator.
+4. Preview, then apply `npm run config:import -- --target remote --from-kv --apply`.
+   Omit `--apply` for the preview. This copies lists, HTML, and `pin:*` ownership.
+5. Validate the imported configuration, deploy, and check login and `/admin`.
+6. Keep the old KV for rollback; remove its binding once migration is verified.
+
+For local KV use `--target local`; `--target sqlite --from-kv` reads local KV.
+KV reads are eventually consistent; wait for previous edits to settle before
+migration. The legacy `seed:local` / `seed:remote` commands still overwrite KV
+and are not part of the new setup flow. Local setup enables D1, so existing local
+KV installations should migrate before continuing development.
+
+Export the SQL configuration to a portable JSON file (existing files are never
+overwritten), then use it as an import source on either backend:
+
+```sh
+npm run config:export -- --target sqlite --output configuration.json
+npm run config:import -- --target local --from configuration.json --apply
+```
+
+Exports include pin ownership but not environment variables or secrets. Import
+is a merge, not an exact database restore. Use a database backup for exact recovery.
+
+## Development and customization
+
+- `npm run check`: type-check app, CLI, and tests.
+- `npm test`: SQLite/route tests and a local D1 runtime test (opens localhost ports).
+- `npm run build`: Workers dry run; `npm run build:node`: Node bundle.
+- `npm run dev`: Workers development server with template rebuilds.
+- `/admin`: SQL-backed access, tags, roles, and trusted HTML; legacy KV supports
+  only the existing allowlist/tag editor and retains eventual consistency.
 - Skins: `blackboard`, `chan`, `corp`, `dark`, `harvest`.
-- `DISABLE_ZAPS=1` hides Lightning tipping UI; set `0` to show it.
-- Protocol collection names and `window.VON` remain compatible with existing
-  records; they are protocol identifiers, not dependencies on a parent checkout.
+- `DISABLE_ZAPS=1`: hide Lightning tipping UI.
+- Empty allowed tags means unrestricted; empty allowlist disables login.
+- AT Protocol handles/DIDs select authors; only Nostr login is implemented.
+
+Shared Hono routes use a storage interface. `src/cloudflare.ts` handles Workers
+bindings and optional R2 caching; `src/node.ts` handles HTTP and static assets.
+D1 reads start at the primary so permission changes are not served from replicas.
+Eta templates and CSS are bundled at build time for both runtimes.
 
 ## Optional storage
 
 Arweave uploads run in the browser using a Wander wallet. Pinata is disabled
 by default. To enable it, set `ENABLE_PINATA="1"`, run
 `npx wrangler secret put PINATA_JWT`, and redeploy. Pinata unpin requests are
-limited to the uploader registered in KV.
+limited to the uploader registered in the database.
 
 The bundled `public/gentou/pandoc.wasm.gz` is sufficient for normal viewing.
 For an optional uncompressed fallback:
@@ -133,8 +196,8 @@ R2 is unnecessary for the default deployment.
 
 ## Scope and provenance
 
-This implementation targets Cloudflare Workers APIs (KV, Static Assets, and
-optional R2); other serverless providers require adapters. The browser still
+Cloudflare Workers and ordinary Linux/Node.js servers are supported. Other
+serverless providers require runtime/storage adapters. The browser still
 uses external CDNs, relays, PDSes, storage gateways, timestamp calendars, and
 wallet/signing extensions. Independence means no parent repository or server
 is required, not offline operation.
@@ -143,7 +206,7 @@ There is no AT Protocol OAuth login, server IPFS node, private archive mode,
 or server-side AI. AI features use browser-provided APIs when available.
 Record pages render their data client-side, so server-generated record SEO
 metadata is limited. Nostr challenges can be replayed within their short TTL;
-rate limits are best effort per isolate. Keep a strong production cookie secret.
+rate limits are best effort per process/isolate. Keep a strong production cookie secret.
 
 Sources and assets were extracted from von's `workers/` and shared `skins/`.
 The original checkout contains no top-level license; this extraction does not
