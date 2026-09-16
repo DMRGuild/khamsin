@@ -1,3 +1,4 @@
+# Tracked template. Run npm run setup to generate your ignored wrangler.toml.
 name = "khamsin"
 main = "src/cloudflare.ts"
 compatibility_date = "2026-05-01"
@@ -13,21 +14,19 @@ watch_dir = "views"
 directory = "./public"
 binding = "ASSETS"
 
-# New installations use D1. Provision with `npx wrangler d1 create khamsin`.
+# Local-only placeholder. Production setup creates or selects D1 automatically.
 [[d1_databases]]
 binding = "DB"
 database_name = "khamsin"
 database_id = "00000000-0000-0000-0000-000000000000"
 migrations_dir = "migrations"
 
-# Legacy KV compatibility. Remove this block after migration to D1.
-[[kv_namespaces]]
-binding = "VON_KV"
-# Local development works without an ID. Before production deployment, run
-# `npx wrangler kv namespace create VON_KV` and put its ID here.
+# Optional legacy migration binding (setup preserves it if already configured):
+# [[kv_namespaces]]
+# binding = "VON_KV"
 # id = "YOUR_KV_NAMESPACE_ID"
 
-# Optional uncompressed pandoc fallback; normal viewing uses the bundled gzip.
+# Optional existing R2 bucket; setup offers this under advanced settings.
 # [[r2_buckets]]
 # binding = "GENTOU_BUCKET"
 # bucket_name = "khamsin-gentou"

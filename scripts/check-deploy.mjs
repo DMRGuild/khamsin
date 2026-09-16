@@ -1,4 +1,8 @@
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
+if (!existsSync(new URL('../wrangler.toml', import.meta.url))) {
+  console.error('No personal wrangler.toml found. Run npm run setup -- --target remote.');
+  process.exit(1);
+}
 const config = readFileSync(new URL('../wrangler.toml', import.meta.url), 'utf8');
 const base = config.match(/^\s*BASE_URL\s*=\s*"([^"]+)"/m)?.[1];
 function table(name) {

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, copyFileSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, existsSync, copyFileSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -55,5 +55,21 @@ test('deployment preflight distinguishes commented D1 from active bindings',()=>
     check(origin+d1,true);
     check(origin+d1+'[[kv_namespaces]]\nbinding="VON_KV"\n',false);
     check(origin+d1.replace('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa','00000000-0000-0000-0000-000000000000'),false);
+  } finally {rmSync(dir,{recursive:true,force:true});}
+});
+
+test('configure-only CLI works from a fresh checkout without creating a database',()=>{
+  const root=process.cwd();
+  const dir=mkdtempSync(join(tmpdir(),'khamsin-config-only-'));
+  try {
+    copyFileSync('wrangler.toml.example',join(dir,'wrangler.toml.example'));
+    const result=spawnSync(process.execPath,[resolve(root,'dist/config-cli.mjs'),'setup','--target','local','--defaults','--configure-only','--name','fresh-archive','--set','SKIN=dark'],{cwd:dir,encoding:'utf8'});
+    assert.equal(result.status,0,result.stdout+result.stderr);
+    const config=readFileSync(join(dir,'wrangler.toml'),'utf8');
+    assert.match(config,/name = "fresh-archive"/);
+    assert.match(config,/SKIN = "dark"/);
+    assert.equal(existsSync(join(dir,'.wrangler')),false);
+    assert.equal(existsSync(join(dir,'.env')),false);
+    assert.equal(existsSync(join(dir,'.dev.vars')),false);
   } finally {rmSync(dir,{recursive:true,force:true});}
 });

@@ -5,8 +5,8 @@
   "scripts": {
     "build:templates": "node scripts/build-templates.mjs",
     "check": "tsc --noEmit",
-    "build": "wrangler deploy --dry-run --outdir dist",
-    "dev": "wrangler dev",
+    "build": "node scripts/ensure-wrangler.mjs --example && wrangler deploy --dry-run --outdir dist",
+    "dev": "node scripts/ensure-wrangler.mjs && wrangler dev",
     "deploy": "node scripts/check-deploy.mjs && wrangler deploy",
     "setup": "node scripts/setup.mjs",
     "seed:local": "node scripts/seed-kv.mjs --local",
@@ -30,6 +30,7 @@
     "@types/node": "^22.20.3",
     "esbuild": "^0.28.2",
     "miniflare": "^4.20260426.0",
+    "smol-toml": "^1.8.0",
     "typescript": "^5.6.0",
     "wrangler": "^4.0.0"
   },

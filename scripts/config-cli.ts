@@ -9,24 +9,39 @@ import { openSqlite } from '../src/storage/sqlite.ts';
 import { normalizeIdentity } from '../src/storage/identity.ts';
 import { CUSTOM_SLOTS, type SqlDriver, type Statement } from '../src/storage/types.ts';
 import { legacyRecords, planMerge, importStatement, bootstrapStatement, type Snapshot } from '../src/storage/transfer.ts';
+import { configureWrangler, ensureRemoteSecrets, type Ask, type RunOptions, type WranglerConfig } from './wrangler-setup.ts';
 
 const {values,positionals} = parseArgs({allowPositionals:true,options:{
   target:{type:'string'}, admin:{type:'string'}, from:{type:'string'}, 'from-kv':{type:'boolean'},
+  name:{type:'string'}, 'base-url':{type:'string'}, 'database-name':{type:'string'}, 'database-id':{type:'string'},
+  'account-id':{type:'string'}, reconfigure:{type:'boolean'}, advanced:{type:'boolean'}, defaults:{type:'boolean'},
+  'configure-only':{type:'boolean'}, set:{type:'string',multiple:true},
   apply:{type:'boolean'}, 'overwrite-html':{type:'boolean'}, output:{type:'string'}, help:{type:'boolean'},
 }});
 const command = positionals[0];
 if (values.help || !command) {
-  console.log(`Khamsin configuration\n\n  npm run setup -- [--target local|sqlite|remote] [--admin npub1…]\n  npm run config:import -- --target local|sqlite|remote --from ./data [--apply]\n  npm run config:import -- --target local|sqlite|remote --from-kv [--apply]\n  npm run config:export -- --target local|sqlite|remote --output backup.json\n\nImports merge lists and preserve existing HTML/pins. --overwrite-html replaces matching HTML.\n--from accepts a data directory or a JSON export. --from-kv reads the same local/remote KV;\nwith target sqlite, it reads local KV. Imports preview by default. No setup files are required.`);
+  console.log(`Khamsin configuration\n\n  npm run setup -- [--target local|sqlite|remote] [--admin npub1…] [--reconfigure] [--advanced]\n  npm run setup -- --target local --configure-only --defaults\n  Setup flags: --name, --base-url, --database-name, --database-id, --account-id, --set KEY=VALUE\n  npm run config:import -- --target local|sqlite|remote --from ./data [--apply]\n  npm run config:import -- --target local|sqlite|remote --from-kv [--apply]\n  npm run config:export -- --target local|sqlite|remote --output backup.json\n\nImports merge lists and preserve existing HTML/pins. --overwrite-html replaces matching HTML.\n--from accepts a data directory or a JSON export. --from-kv reads the same local/remote KV;\nwith target sqlite, it reads local KV. Imports preview by default. No setup files are required.`);
   process.exit(0);
 }
 const color = process.stdout.isTTY && !process.env.NO_COLOR;
 const bold = (s:string) => color ? `\x1b[1;36m${s}\x1b[0m` : s;
-const rl = process.stdin.isTTY ? createInterface({input:process.stdin,output:process.stdout}) : null;
-function wrangler(args: string[], capture = true): string {
+const rl = process.stdin.isTTY && !values.defaults ? createInterface({input:process.stdin,output:process.stdout}) : null;
+const ask: Ask | undefined = rl ? async (label, fallback, validate) => {
+  while (true) {
+    const answer = (await rl.question(`${label}${fallback ? ` [${fallback}]` : ''}: `)).trim() || fallback;
+    try { validate?.(answer); return answer; }
+    catch (err) { console.log((err as Error).message); }
+  }
+} : undefined;
+function wrangler(args: string[], capture = true, options: RunOptions = {}): string {
+  if (options.interactive) rl?.pause();
   const result = spawnSync(process.execPath,['node_modules/wrangler/bin/wrangler.js',...args],{
-    encoding:'utf8', stdio:capture ? ['ignore','pipe','pipe'] : ['ignore','inherit','inherit'],maxBuffer:64*1024*1024,
-    env:{...process.env,WRANGLER_SEND_METRICS:'false'},
+    encoding:'utf8', input:options.input,
+    stdio:options.interactive ? 'inherit' : capture ? [options.input===undefined?'ignore':'pipe','pipe','pipe'] : ['ignore','inherit','inherit'],
+    maxBuffer:64*1024*1024,
+    env:{...process.env,...options.env,WRANGLER_SEND_METRICS:'false'},
   });
+  if (options.interactive) rl?.resume();
   if (result.error) throw result.error;
   if (result.status !== 0) throw new Error(capture ? result.stderr || result.stdout || 'Wrangler failed' : 'Wrangler failed');
   return result.stdout || '';
@@ -70,7 +85,7 @@ async function readLegacyKv(target:string):Promise<Record<string,string>> {
   return data;
 }
 let close = () => {};
-try {
+async function main() {
   console.log('\n'+bold('  KHAMSIN  /  '+(command==='setup' ? 'First-time setup' : command))+'\n');
   let target=values.target;
   if (!target && command==='setup' && rl) {
@@ -80,6 +95,16 @@ try {
   }
   if (!target || !['local','sqlite','remote'].includes(target)) throw new Error('Specify --target local, sqlite, or remote.');
   console.log(`Target: ${target}${target==='sqlite' ? ' ('+(process.env.DATABASE_PATH || '.state/khamsin.sqlite')+')' : ''}`);
+  let setupConfig: WranglerConfig | undefined;
+  const run = (args:string[], options?:RunOptions) => wrangler(args,!options?.interactive,options);
+  if (command==='setup' && target!=='sqlite') {
+    setupConfig=await configureWrangler({target:target as 'local'|'remote',options:values,ask,run});
+    if (setupConfig.account_id) process.env.CLOUDFLARE_ACCOUNT_ID=setupConfig.account_id;
+    if (values['configure-only']) {
+      console.log('Configuration saved. No login, remote resources, database migrations, or administrator changes were performed.');
+      return;
+    }
+  } else if (values['configure-only']) throw new Error('--configure-only is for local/remote Wrangler configuration.');
   let db:SqlDriver;
   if (target==='sqlite') {
     const path=resolve(process.env.DATABASE_PATH || '.state/khamsin.sqlite');
@@ -87,14 +112,7 @@ try {
     const opened=openSqlite(path); db=opened.store.db; close=()=>opened.database.close();
     if (command==='setup') opened.database.exec(readFileSync('migrations/0001_store.sql','utf8'));
   } else {
-    let config=readFileSync('wrangler.toml','utf8');
-    if (!/^binding\s*=\s*"DB"/m.test(config)) {
-      if (command!=='setup' || target==='remote') throw new Error('Create D1 with `npx wrangler d1 create khamsin`, then configure the DB binding in wrangler.toml.');
-      config=config.replace(/# \[\[d1_databases\]\][\s\S]*?# migrations_dir = "migrations"/, '[[d1_databases]]\nbinding = "DB"\ndatabase_name = "khamsin"\ndatabase_id = "00000000-0000-0000-0000-000000000000"\nmigrations_dir = "migrations"');
-      writeFileSync('wrangler.toml',config);
-      console.log('Enabled local D1 in wrangler.toml. Replace its placeholder ID before production deployment.');
-    }
-    if (target==='remote' && config.includes('00000000-0000-0000-0000-000000000000')) throw new Error('Replace the local D1 placeholder ID in wrangler.toml before using --target remote.');
+    if (!existsSync('wrangler.toml')) throw new Error('Missing wrangler.toml. Run npm run setup first.');
     if (command==='setup') wrangler(['d1','migrations','apply','DB',`--${target}`],false);
     db=d1Driver(target);
   }
@@ -118,13 +136,14 @@ try {
       if (!inserted.length) throw new Error('This database was initialized by another process; no changes applied.');
       console.log('✓ Administrator and access permission registered together.');
     }
+    if (target==='remote' && setupConfig) ensureRemoteSecrets(setupConfig,run,console.log,{interactive:Boolean(rl),pinataToken:process.env.PINATA_JWT});
     if (target!=='remote') {
       const file=target==='sqlite' ? '.env' : '.dev.vars';
-      if (!existsSync(file)) writeFileSync(file,`BASE_URL=http://localhost:8787\nCOOKIE_SECRET=${randomBytes(32).toString('base64')}\nSKIN=blackboard\nFORCE_ALLOW_TAGLESS=1\nDISABLE_ZAPS=1\n`,{flag:'wx',mode:0o600});
+      if (!existsSync(file)) writeFileSync(file,`BASE_URL=http://localhost:8787\nCOOKIE_SECRET=${randomBytes(32).toString('base64')}\n${target==='sqlite'?'SKIN=blackboard\nFORCE_ALLOW_TAGLESS=1\nDISABLE_ZAPS=1\n':''}`,{flag:'wx',mode:0o600});
       console.log(`✓ ${file} ready (existing files preserved).`);
     }
     console.log('\n'+bold('Ready'));
-    console.log(target==='sqlite' ? '  npm run build:node\n  npm start' : target==='local' ? '  npm run dev' : '  Set BASE_URL and COOKIE_SECRET. For a new D1-only installation, remove the unused VON_KV binding.\n  npm run deploy');
+    console.log(target==='sqlite' ? '  npm run build:node\n  npm start' : target==='local' ? '  npm run dev' : '  npm run deploy');
     console.log('  Sign in with your Nostr extension, then open /admin.\n  No data/ files or seed command are needed.\n');
   } else if (command==='export') {
     if (!values.output) throw new Error('Specify --output <file.json>.');
@@ -162,5 +181,7 @@ try {
       console.log('✓ Imported atomically.');
     }
   } else throw new Error('Unknown command. Use --help.');
-} catch (err) { console.error('\n'+(err as Error).message); process.exitCode=1; }
+}
+try { await main(); }
+catch (err) { console.error('\n'+(err as Error).message); process.exitCode=1; }
 finally { rl?.close(); close(); }

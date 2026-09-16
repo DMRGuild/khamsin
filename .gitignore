@@ -40,3 +40,7 @@ dist/
 /.agent-shell/
 *.log
 npm-debug.log*
+
+# Personal deployment configuration; the template remains tracked
+/wrangler.toml
+/wrangler.toml.tmp
