@@ -1,15 +1,42 @@
+# Dependencies and generated build output
 node_modules/
 .wrangler/
 dist/
+/src/templates.gen.mjs
+
+# Local credentials; only explicitly named examples belong in Git
 .dev.vars
 .dev.vars.*
 !.dev.vars.example
-.env*
-src/templates.gen.mjs
-data/*.txt
-data/custom/*.html
+!.dev.vars.*.example
+.env
+.env.*
+!.env.example
+!.env.*.example
+.envrc
 
+# Legacy operator configuration (keep *.example templates tracked)
+/data/*.txt
+/data/custom/*.html
+
+# Runtime databases, including SQLite WAL and rollback journals
 .state/
 *.sqlite
-*.sqlite-shm
-*.sqlite-wal
+*.sqlite-*
+*.sqlite3
+*.sqlite3-*
+*.db
+*.db-*
+
+# Configuration exports and backups (may contain operator data)
+/backups/
+/exports/
+/configuration.json
+/backup.json
+/data/*.json
+/data/*.sql
+
+# Local conversation history and runtime logs
+/.agent-shell/
+*.log
+npm-debug.log*

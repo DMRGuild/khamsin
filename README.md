@@ -150,9 +150,14 @@ Export the SQL configuration to a portable JSON file (existing files are never
 overwritten), then use it as an import source on either backend:
 
 ```sh
-npm run config:export -- --target sqlite --output configuration.json
-npm run config:import -- --target local --from configuration.json --apply
+mkdir -p backups
+npm run config:export -- --target sqlite --output backups/configuration.json
+npm run config:import -- --target local --from backups/configuration.json --apply
 ```
+
+The `backups/` directory is ignored by Git. Keep exports there; arbitrary output
+filenames elsewhere are not automatically ignored. `.gitignore` does not remove
+files that are already tracked.
 
 Exports include pin ownership but not environment variables or secrets. Import
 is a merge, not an exact database restore. Use a database backup for exact recovery.

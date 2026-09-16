@@ -123,9 +123,14 @@ HTML은 기본적으로 보존하며, `--overwrite-html`을 명시하면 해당 
 기존 `seed:*`는 KV를 덮어쓰는 호환 명령이며 새 설치에는 필요하지 않습니다.
 
 ```sh
-npm run config:export -- --target sqlite --output configuration.json
-npm run config:import -- --target local --from configuration.json --apply
+mkdir -p backups
+npm run config:export -- --target sqlite --output backups/configuration.json
+npm run config:import -- --target local --from backups/configuration.json --apply
 ```
+
+`backups/`는 Git에서 제외됩니다. 내보내기 파일은 이 폴더에 보관하세요. 다른
+경로에 임의로 지정한 파일명까지 자동으로 제외되지는 않으며, 이미 추적 중인
+파일은 `.gitignore`를 추가해도 추적이 해제되지 않습니다.
 
 JSON에는 운영 설정과 Pin 소유권이 포함되지만 환경 변수와 비밀키는 포함되지
 않습니다. 가져오기는 병합이므로 정확한 원상 복구에는 DB 백업을 사용하세요.
