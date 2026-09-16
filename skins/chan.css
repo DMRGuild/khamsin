@@ -1,0 +1,161 @@
+/* 4chan / Yotsuba-B inspired skin */
+
+@import url('https://fonts.googleapis.com/css2?family=EB+Garamond:wght@500;600;700&family=Playfair+Display:wght@700;800&family=Noto+Sans+JP:wght@400;500;700&family=Noto+Sans+KR:wght@400;500;700&display=swap');
+
+:root {
+  color-scheme: light;
+  --bg:        #FFFFEE;
+  --bg-raised: #D6DAF0;
+  --bg-hover:  #C8CEEC;
+  --border:    #B7C5D9;
+  --border-hi: #8899AA;
+  --text:      #000000;
+  --text-muted:#800000;
+  --text-dim:  #AAAAAA;
+  --accent:    #34345C;
+  --accent-dim:#EEEEFF;
+  --red:       #CC1105;
+  --red-dim:   #FFDDDD;
+  --mono:      "DM Mono", "MS Gothic", "Osaka-Mono", "Noto Sans JP", "Apple SD Gothic Neo", "Malgun Gothic", "Noto Sans KR", "Courier New", monospace;
+  --sans:      Arial, Helvetica, "Noto Sans JP", "Noto Sans KR", "Apple SD Gothic Neo", "Malgun Gothic", sans-serif;
+}
+
+/* faint scanline grain so the cream background doesn't read as flat/clean */
+body {
+  background-color: var(--bg);
+  background-image: repeating-linear-gradient(
+    180deg,
+    rgba(0, 0, 0, 0.028) 0px,
+    rgba(0, 0, 0, 0.028) 1px,
+    transparent 1px,
+    transparent 3px
+  );
+}
+
+/* ── Title: bare board-header, no banner box — the
+   designed-banner look read as too polished/corporate;
+   real boards just print the title straight on the page ── */
+.site-header {
+  background: none;
+  color: var(--text);
+  margin: 0 0 1.5rem;
+  padding: 0 0 0.6rem;
+  border: none;
+  border-bottom: 1px dashed var(--border-hi);
+  box-shadow: none;
+}
+.site-header h1 {
+  font-family: "Playfair Display", Georgia, "Times New Roman", Times, "Noto Sans JP", "Noto Sans KR", serif;
+  font-size: 1.85rem;
+  font-weight: 700;
+  letter-spacing: normal;
+  text-transform: none;
+  text-shadow: 1px 1px 0 rgba(0, 0, 0, 0.12);
+}
+.site-header h1 a { color: var(--red); text-decoration: none; }
+.site-header h1 a::before { content: none; }
+.site-header p {
+  font-family: "Playfair Display", Georgia, "Times New Roman", Times, "Noto Sans JP", "Noto Sans KR", serif;
+  font-style: italic;
+  color: var(--accent);
+}
+
+/* ── Record cards: square, left rail, hard offset shadow ── */
+.record {
+  border-radius: 0;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  box-shadow: 2px 2px 0 rgba(0, 0, 0, 0.08);
+  transition: border-color 0.12s, box-shadow 0.12s;
+}
+.record:hover {
+  border-color: var(--accent);
+  box-shadow: 3px 3px 0 rgba(0, 0, 0, 0.12);
+}
+
+/* ── Title bar: classic Yotsuba-B navy board-bar look ── */
+.record-title-link {
+  border-radius: 0;
+  background: var(--accent);
+  color: #FFFFEE;
+  border-bottom: 1px solid #21213D;
+  font-family: "EB Garamond", Garamond, Baskerville, Georgia, "Times New Roman", "Noto Sans JP", "Noto Sans KR", serif;
+  font-size: 1rem;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  text-shadow: 1px 1px 0 rgba(0, 0, 0, 0.25);
+}
+.record-title-link:hover {
+  background: #46466E;
+  color: #FFFFEE;
+}
+
+/* ── Forms: sunken inputs, square corners ── */
+input[type="text"],
+textarea {
+  background: #FFFFFF;
+  border-radius: 0;
+  box-shadow: inset 1px 1px 3px rgba(0, 0, 0, 0.15);
+}
+input[type="text"]:focus,
+textarea:focus {
+  border-color: var(--accent);
+  box-shadow: inset 1px 1px 3px rgba(0, 0, 0, 0.15), 0 0 0 2px rgba(52, 52, 92, 0.18);
+}
+
+/* ── Buttons: chunky beveled web-1.0 style ── */
+button {
+  background: #DDDDEE;
+  border: 1px solid var(--border-hi);
+  border-radius: 0;
+  box-shadow: inset 1px 1px 0 rgba(255, 255, 255, 0.65), inset -1px -1px 0 rgba(0, 0, 0, 0.18);
+  color: #000;
+  font-family: var(--mono);
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+button:hover { background: #CCCCDD; }
+button:active {
+  box-shadow: inset -1px -1px 0 rgba(255, 255, 255, 0.65), inset 1px 1px 0 rgba(0, 0, 0, 0.18);
+}
+button[type="submit"],
+.btn-primary {
+  background: #800000;
+  border-color: #4D0000;
+  color: #FFFFEE;
+  box-shadow: inset 1px 1px 0 rgba(255, 255, 255, 0.18), inset -1px -1px 0 rgba(0, 0, 0, 0.3);
+}
+button[type="submit"]:hover,
+.btn-primary:hover { background: #900000; }
+button[type="submit"]:active,
+.btn-primary:active {
+  box-shadow: inset -1px -1px 0 rgba(255, 255, 255, 0.18), inset 1px 1px 0 rgba(0, 0, 0, 0.3);
+}
+
+/* ── Code blocks ── */
+pre {
+  background: #F8F8F8;
+  border: 1px dashed var(--border-hi);
+  border-radius: 0;
+  color: #333;
+}
+code {
+  background: #E8EEFF;
+  border: 1px solid var(--border);
+  border-radius: 0;
+  color: #34345C;
+}
+
+/* ── Dividers: dashed like old HTML rules ── */
+hr { border-top: 1px dashed var(--border-hi); }
+
+/* ── Scrollbar: chunky and square ── */
+::-webkit-scrollbar { width: 14px; height: 14px; }
+::-webkit-scrollbar-track { background: var(--bg-raised); }
+::-webkit-scrollbar-thumb {
+  background: var(--accent);
+  border: 3px solid var(--bg-raised);
+  border-radius: 0;
+}
+::-webkit-scrollbar-thumb:hover { background: #1F1F3D; }

@@ -1,0 +1,230 @@
+<%/* Record detail SHELL. The server knows only the URL parameters
+     (it.recordDid / it.recordRkey, pre-validated) and the derived nevent;
+     /static/js/record-page.js fetches the record from the relays (npub) or
+     the author's PDS (DID), verifies it, and fills the skeleton below. Every
+     <dt>/<dd> pair that depends on record data starts hidden. */%>
+<nav class="back-nav">
+  <a href="/">&larr; All Documents</a>
+</nav>
+
+<%/* Classic script, runs during parse — guarantees window.__vonRecord (a
+     promise of the verified record, or null) exists before ANY module script
+     (tipjar, gentou, local-ai) awaits it. record-page.js resolves it. */%>
+<script>
+  window.__vonRecord = new Promise(function (resolve) {
+    window.__vonRecordResolve = resolve;
+  });
+</script>
+
+<%/* Distributed-fetch loader (styles in the layout's base CSS).
+     record-page.js removes it on success or turns it into a plain error
+     line on failure. */%>
+<div class="muted von-loader" id="record-status" role="status">
+  <span class="von-loader-label">retrieving record from the distributed archive</span>
+  <span class="von-loader-net" aria-hidden="true"><i class="von-loader-node"></i><i class="von-loader-node"></i><i class="von-loader-node"></i><i class="von-loader-node"></i><i class="von-loader-node"></i><span class="von-loader-pulse"></span></span>
+  <span class="von-loader-log" aria-hidden="true"><i>dialing nostr relays&hellip;</i><i>resolving the author's PDS&hellip;</i><i>verifying signatures&hellip;</i><i>reading the ledger&hellip;</i></span>
+</div>
+
+<article class="record-detail" id="record-detail" hidden>
+  <h2 id="rec-title"></h2>
+
+  <p class="description" id="rec-description" hidden></p>
+
+  <dl>
+    <dt>Author</dt>
+    <% if (it.recordDid.startsWith("npub1")) { %>
+    <dd id="rec-author"><a href="https://njump.me/<%= it.recordDid %>" target="_blank" rel="noopener noreferrer" title="<%= it.recordDid %>"><%= it.recordDid.slice(0, 12) %>&hellip;<%= it.recordDid.slice(-6) %></a></dd>
+    <% } else { %>
+    <dd id="rec-author"><a href="https://bsky.app/profile/<%= it.recordDid %>" target="_blank" rel="noopener noreferrer"><%= it.recordDid %></a></dd>
+    <% } %>
+    <dt>Created</dt>
+    <dd id="rec-created">&mdash;</dd>
+    <dt>File</dt>
+    <dd id="rec-file">&mdash;</dd>
+    <dt id="rec-cid-dt" hidden>CID</dt>
+    <dd id="rec-cid-dd" hidden>
+      <a id="rec-cid-link" href="#" target="_blank" rel="noopener noreferrer"><code id="rec-cid"></code></a>
+      <a id="rec-cid-viewer" href="#" target="_blank" rel="noopener noreferrer" title="Open with viewer" aria-label="Open with viewer">👁</a>
+    </dd>
+    <dt id="rec-arweave-dt" hidden>Arweave</dt>
+    <dd id="rec-arweave-dd" hidden>
+      <a id="rec-arweave-link" href="#" target="_blank" rel="noopener noreferrer"><code id="rec-arweave"></code></a>
+      <a id="rec-arweave-viewer" href="#" target="_blank" rel="noopener noreferrer" title="Open with viewer" aria-label="Open with viewer">👁</a>
+    </dd>
+    <dt id="rec-artifacts-dt" hidden>Contents</dt>
+    <dd id="rec-artifacts-dd" hidden>
+      <ul class="artifact-list" id="rec-artifact-list"></ul>
+    </dd>
+    <dt id="rec-ots-dt" hidden>OpenTimeStamps</dt>
+    <dd id="rec-ots-dd" hidden>
+      <style>
+        .ots-verify {
+          /* OpenTimestamps' signature neon blue, independent of skin accent */
+          --ots-blue: #00bfff;
+          --ots-blue-dim: rgba(0, 191, 255, 0.35);
+          font-family: var(--mono);
+          font-size: 0.78rem;
+          color: var(--text-muted);
+        }
+        .ots-verify-line {
+          display: flex;
+          align-items: center;
+          gap: 0.5rem;
+          flex-wrap: wrap;
+        }
+        .ots-verify-icon { flex-shrink: 0; }
+        .ots-verify-icon.ok      { color: var(--ots-blue); }
+        .ots-verify-icon.err     { color: var(--red); }
+        .ots-verify-icon.loading { color: var(--text-muted); }
+        .ots-verify-icon.dim     { opacity: 0.6; }
+        .ots-verify-text { overflow-wrap: anywhere; }
+        .ots-verify-links { display: inline-flex; gap: 0.6rem; flex-wrap: wrap; }
+        .ots-verify-links a {
+          color: var(--ots-blue);
+          border-bottom: 1px solid var(--ots-blue-dim);
+          white-space: nowrap;
+        }
+        /* layout.eta's base styles paint the ▸ marker and <code> with the
+           skin accent — keep every highlight in this section neon blue */
+        .ots-verify summary::before { color: var(--ots-blue); }
+        .ots-verify code { color: var(--ots-blue); }
+        .ots-verify-log-wrap { margin-top: 0.45rem; }
+        .ots-verify-log-wrap summary { cursor: pointer; font-size: 0.7rem; }
+        .ots-verify-log {
+          margin-top: 0.3rem;
+          /* exactly 4 log lines tall */
+          line-height: 1.5;
+          max-height: calc(4 * 1.5em);
+          overflow-y: auto;
+          font-size: 0.68rem;
+          overflow-wrap: anywhere;
+        }
+        .ots-verify-log .line::before { content: '> '; }
+        .ots-verify-log .err { color: var(--red); }
+        .ots-verify-log .ok  { color: var(--ots-blue); }
+        .ots-verify-log .dim { opacity: 0.5; }
+        .ots-verify-raw { margin-top: 0.45rem; }
+        .ots-verify-raw summary { cursor: pointer; font-size: 0.7rem; }
+        .ots-verify-raw code {
+          display: block;
+          margin-top: 0.3rem;
+          /* exactly 4 text lines tall — border-box, so add the vertical
+             padding and border that layout.eta's base code style applies */
+          line-height: 1.5;
+          max-height: calc(4 * 1.5em + 0.2em + 2px);
+          overflow: auto;
+          overflow-wrap: anywhere;
+          font-size: 0.68rem;
+        }
+      </style>
+      <% /* Status text, links and progress are driven by the viewer script in
+            partials/gentou.eta: it hashes the bytes it downloaded and checks
+            the proof against multiple block explorers in a Web Worker. */ %>
+      <div class="ots-verify" id="ots-verify">
+        <div class="ots-verify-line">
+          <span class="ots-verify-icon dim" id="ots-verify-icon">&middot;</span>
+          <span class="ots-verify-text" id="ots-verify-text">not verified</span>
+          <span class="ots-verify-links" id="ots-verify-links"></span>
+        </div>
+        <details class="ots-verify-log-wrap" open>
+          <summary>verification log</summary>
+          <div class="ots-verify-log" id="ots-verify-log"></div>
+        </details>
+        <details class="ots-verify-raw">
+          <summary>raw proof (base64)</summary>
+          <code id="ots-raw-main"></code>
+        </details>
+        <details class="ots-verify-raw" id="ots-raw-sig-wrap" hidden>
+          <summary>signature file proof (base64)</summary>
+          <code id="ots-raw-sig"></code>
+        </details>
+      </div>
+    </dd>
+    <% if (it.nevent) { %>
+    <%/* Nostr event pointer with relay hints, derived server-side from the
+         URL alone. Styled with the skin's own CSS variables so it fits every
+         skin (no hardcoded skin). */%>
+    <dt>Nostr Event</dt>
+    <dd>
+      <style>
+        .nostr-event {
+          display: inline-flex;
+          align-items: center;
+          gap: 0.5rem;
+          flex-wrap: wrap;
+          font-family: var(--mono);
+          font-size: 0.78rem;
+        }
+        .nostr-event a {
+          color: var(--accent);
+          border-bottom: 1px solid var(--border-hi);
+          white-space: nowrap;
+        }
+        .nostr-event-copy {
+          font-family: var(--mono);
+          font-size: 0.72rem;
+          letter-spacing: 0.02em;
+          padding: 0.2rem 0.6rem;
+          background: transparent;
+          color: var(--text-muted);
+          border: 1px solid var(--border);
+          border-radius: 3px;
+          cursor: pointer;
+          transition: color 0.12s, border-color 0.12s;
+        }
+        .nostr-event-copy:hover {
+          color: var(--text);
+          border-color: var(--border-hi);
+        }
+        .nostr-event-copy.copied {
+          color: var(--accent);
+          border-color: var(--accent);
+        }
+      </style>
+      <span class="nostr-event">
+        <a href="https://njump.me/<%= it.nevent %>" target="_blank" rel="noopener noreferrer">view on njump</a>
+        <button type="button" class="nostr-event-copy" id="copy-nevent" data-nevent="<%= it.nevent %>">copy nevent</button>
+      </span>
+      <script>
+        document.getElementById("copy-nevent")?.addEventListener("click", (e) => {
+          const btn = e.currentTarget;
+          navigator.clipboard.writeText(btn.dataset.nevent).then(() => {
+            const t = btn.textContent;
+            btn.textContent = "copied";
+            btn.classList.add("copied");
+            setTimeout(() => { btn.textContent = t; btn.classList.remove("copied"); }, 1200);
+          });
+        });
+      </script>
+    </dd>
+    <% } %>
+    <%/* Zap/tip UI is a deployment choice (DISABLE_ZAPS). */%>
+    <% if (!it.zapsDisabled) { %>
+    <%~ include("@partials/tipjar", it) %>
+    <% } %>
+  </dl>
+
+  <%/* record-page.js inserts the nostr Delete button here when the session
+       owns the record (kind-5 handled by authbar's delegated listener). */%>
+  <div id="rec-owner-actions"></div>
+</article>
+
+<%/* Local AI summary (Chrome built-in Summarizer/Translator, progressive
+     enhancement): /static/js/local-ai.js unhides this panel only when the
+     APIs exist and the gentou viewer produced enough prose. No server, no
+     API keys — the model runs on the reader's own machine. */%>
+<div class="ai-summary" id="ai-summary" hidden>
+  <h3>Summary (on-device AI)</h3>
+  <div class="ai-summary-body muted" id="ai-summary-body"></div>
+  <div class="ai-summary-actions">
+    <button type="button" class="btn-small" id="ai-summarize">Summarize</button>
+    <button type="button" class="btn-small" id="ai-translate" hidden>Translate</button>
+  </div>
+</div>
+
+<%/* Kick off the record fetch as early as possible; tipjar/gentou/local-ai
+     all await window.__vonRecord. */%>
+<script type="module" src="/static/js/record-page.js"></script>
+<script type="module" src="/static/js/local-ai.js"></script>
+
+<%~ include("@partials/gentou", it) %>

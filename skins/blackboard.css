@@ -1,0 +1,278 @@
+/* Gold-on-paper skin: Pretendard sans + EB Garamond / Eulyoo1945 serif, with an
+   always-on left document sidebar laid out as a flat spreadsheet
+   (author | title | year). Dark mode follows the OS via prefers-color-scheme —
+   no manual toggle. */
+
+@import url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.css');
+@import url('https://fonts.googleapis.com/css2?family=EB+Garamond:ital,wght@0,400;0,500;0,600;1,400&family=DM+Mono:wght@300;400;500&display=swap');
+
+/* Eulyoo1945 — serif Hangul reading face for the main pane. EB Garamond has
+   no Korean glyphs, so this catches them via per-glyph font fallback. */
+@font-face {
+  font-family: "Eulyoo1945";
+  src: url("https://cdn.jsdelivr.net/gh/0xd669/eulyoo1945@main/Eulyoo1945-Regular.woff2") format("woff2");
+  font-weight: 400;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Eulyoo1945";
+  src: url("https://cdn.jsdelivr.net/gh/0xd669/eulyoo1945@main/Eulyoo1945-SemiBold.woff2") format("woff2");
+  font-weight: 600;
+  font-display: swap;
+}
+
+/* ── Palette: light (paper) ─────────────────────── */
+:root {
+  color-scheme: light;
+  --bg:        #F2F2F2;
+  --bg-raised: #FFFFFF;
+  --bg-hover:  #E7E7E7;
+  --border:    #DCDCDC;
+  --border-hi: #C4C4C4;
+  --text:      #3D3D3D;
+  --text-muted:#919191;
+  --text-dim:  #B5B5B5;
+  --accent:    #9C7A00;
+  --accent-dim:#EFE6C6;
+  --red:       #CC1105;
+  --red-dim:   #FBE0DE;
+  --serif:     "EB Garamond", "Eulyoo1945", Garamond, Georgia, "Times New Roman", serif;
+  --sans:      "Pretendard", "Pretendard Variable", -apple-system, BlinkMacSystemFont,
+               "Segoe UI", Roboto, "Noto Sans KR", sans-serif;
+  --mono:      "DM Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+}
+
+/* ── Palette: dark (all-black / white) ──────────── */
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+    --bg:        #000000;
+    --bg-raised: #0B0B0B;
+    --bg-hover:  #171717;
+    --border:    #262626;
+    --border-hi: #383838;
+    --text:      #FFFFFF;
+    --text-muted:#8A8A8A;
+    --text-dim:  #4A4A4A;
+    --accent:    #E3C36B;
+    --accent-dim:#332C12;
+    --red:       #FF6B60;
+    --red-dim:   #3A1512;
+  }
+}
+
+body {
+  font-weight: 400;
+  line-height: 1.6;
+}
+
+/* ── Site header: paper band with cuneiform mark ── */
+.site-header h1 {
+  font-family: var(--sans);
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+.site-header h1 a { color: var(--text); }
+.site-header h1 a::before {
+  content: none;
+}
+.site-header p {
+  font-family: var(--serif);
+  font-style: italic;
+  color: var(--text-muted);
+}
+
+/* ── Full-bleed two-column layout when the sidebar is present ── */
+body:has(.doc-sidebar) {
+  max-width: none;
+  margin: 0;
+  padding: 0;
+}
+/* The site header sits above the grid as a full-width band. */
+body:has(.doc-sidebar) .site-header {
+  margin: 0;
+  padding: 1.5rem 2rem;
+  border-bottom: 1px solid var(--border);
+}
+/* The base ticker-tape rule bleeds out of the narrow padded column with
+   100vw + negative margins; here body is already full-bleed with zero
+   padding, so undo that and let the tape sit flush at the very top. */
+body:has(.doc-sidebar) .ticker-tape {
+  width: 100%;
+  margin: 0;
+}
+/* DM Mono has no Hangul, so Korean titles were dropping to a blurry system
+   fallback; per-glyph fallback keeps Latin in the mono face and sends Korean
+   to the skin's crisp sans stack instead. */
+.ticker-tape {
+  font-family: "DM Mono", "Pretendard", "Pretendard Variable",
+    "Noto Sans KR", "Malgun Gothic", sans-serif;
+}
+
+.layout {
+  display: grid;
+  grid-template-columns: [sidebar] clamp(19.8rem, 28.8vw, 30.6rem) [main] 1fr;
+}
+/* The left column holds the account panel above the document list, and is the
+   sticky/scrolling container. Both columns share the single grid row; placement
+   is by explicit column name, so DOM order (main-then-side) doesn't matter.
+   Omitting grid-row would push the side column onto a second row. */
+.side-col {
+  grid-column: sidebar;
+  grid-row: 1;
+  position: sticky;
+  top: 0;
+  max-height: 100vh;
+  overflow-y: auto;
+  border-right: 1px solid var(--border);
+  padding: 1.5rem 1.5rem 3rem;
+  background: var(--bg);
+}
+/* Narrower serif reading column; the main area's remaining width is whitespace. */
+.main-pane {
+  grid-column: main;
+  grid-row: 1;
+  min-width: 0;
+  max-width: 44rem;
+  margin-inline: auto;
+  padding: 2.75rem 3rem 5rem;
+  font-family: var(--serif);
+  font-size: 1.12rem;
+  line-height: 1.75;
+}
+
+/* ── Account panel (login / upload) atop the sidebar ── */
+/* The login button is small and white rather than the loud accent fill. */
+.side-col .login-section button[type="submit"] {
+  padding: 0.32rem 0.85rem;
+  font-size: 0.75rem;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  background: #FFFFFF;
+  color: #1A1A1A;
+  border: 1px solid var(--border-hi);
+  border-radius: 4px;
+}
+.side-col .login-section button[type="submit"]:hover {
+  background: #F0F0F0;
+  border-color: var(--text-muted);
+}
+
+/* ── Sidebar as a spreadsheet ───────────────────── */
+.doc-sidebar {
+  display: grid;
+  grid-template-columns:
+    [author] minmax(6rem, 1fr)
+    [title]  minmax(0, 1.5fr)
+    [date]   max-content;
+  align-content: start;
+  column-gap: 1rem;
+  row-gap: 0;
+  font-family: var(--sans);
+}
+/* Caption spans all columns; the only underline in the list. */
+.doc-sidebar > h2 {
+  grid-column: 1 / -1;
+  font-family: var(--sans);
+  font-size: 0.85rem;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+  padding-bottom: 0.5rem;
+  margin-bottom: 0.4rem;
+  border-bottom: 1px solid var(--border-hi);
+}
+.doc-sidebar > .muted { grid-column: 1 / -1; }
+
+/* Each row is subgrid onto the three parent columns — no card, no separators. */
+.doc-sidebar .record {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: subgrid;
+  align-items: baseline;
+  column-gap: 1rem;
+  border: none;
+  background: none;
+  border-radius: 0;
+  box-shadow: none;
+  padding: 0.28rem 0;
+  margin: 0;
+}
+.doc-sidebar .record:hover { border: none; background: color-mix(in srgb, var(--accent) 6%, transparent); }
+
+.doc-sidebar .record-author {
+  grid-column: author;
+  grid-row: 1;
+  font-family: var(--sans);
+  font-size: 0.88rem;
+  font-weight: 300;
+  color: var(--text-muted);
+}
+.doc-sidebar .record-author a { color: var(--text-muted); }
+.doc-sidebar .record-author a:hover { color: var(--accent); }
+
+.doc-sidebar .record-heading {
+  grid-column: title;
+  grid-row: 1;
+  margin: 0;
+  font-family: var(--sans);
+  font-size: 0.95rem;
+  font-weight: 400;
+  line-height: 1.35;
+}
+.doc-sidebar .record-heading a { color: var(--text); }
+.doc-sidebar .record-heading a:hover { color: var(--accent); text-decoration: none; }
+.doc-sidebar .record-title-link { display: inline; padding: 0; background: none; border: none; }
+.doc-sidebar .record-title-link[aria-current="page"] {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.doc-sidebar .record-date {
+  grid-column: date;
+  grid-row: 1;
+  font-family: var(--mono);
+  font-size: 0.82rem;
+  color: var(--text-dim);
+  text-align: right;
+}
+
+/* Deletion isn't offered from the terse sidebar list. */
+.doc-sidebar .record-delete { display: none; }
+
+/* ── Main-pane headings pin the serif stack (Korean via Eulyoo1945). Some base
+   component rules set headings to --mono, which has no Korean glyphs, so Korean
+   would otherwise drop to a system font (e.g. GulimChe). Component styles like
+   `.gentou-prose h1` are injected in the body, AFTER this skin sheet, so a bare
+   `.main-pane h1` ties on specificity and loses on order — the `main` tag
+   qualifier lifts this to (0,1,2) so it wins regardless of order. ── */
+main.main-pane h1, main.main-pane h2, main.main-pane h3,
+main.main-pane h4, main.main-pane h5, main.main-pane h6 {
+  font-family: var(--serif);
+}
+.record-detail h2 { font-weight: 600; }
+
+/* ── Settings/admin descriptions: upright sans, darker than the muted
+   off-tone — the serif italic default is hard to read at this size. ── */
+.settings .muted, .admin .muted {
+  font-family: var(--sans);
+  color: color-mix(in srgb, var(--text) 75%, var(--text-muted));
+}
+
+/* ── Stack when the viewport is squarish or taller (width ≤ 4/3 × height):
+   two columns feel cramped well before true portrait, so the threshold
+   sits above 1:1. Ratio-based, so it adapts to any screen size. ── */
+@media (max-aspect-ratio: 4/3) {
+  .layout { display: block; }
+  body:has(.doc-sidebar) .site-header { padding: 1.25rem 1.25rem; }
+  .main-pane { max-width: none; padding: 1.5rem 1.25rem; }
+  .side-col {
+    position: static;
+    max-height: none;
+    overflow-y: visible;
+    border-right: none;
+    border-top: 1px solid var(--border);
+    padding: 1.5rem 1.25rem 3rem;
+  }
+}

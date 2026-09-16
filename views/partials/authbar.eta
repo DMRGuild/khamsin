@@ -1,0 +1,554 @@
+<% /* Shared auth/upload panel. Three states: allowed / logged-in-but-denied
+      / logged-out. All uploads are fetch-based: the browser stamps the
+      document with OpenTimestamps first (/gentou/ots-stamp.js), then either
+      uploads to Arweave via the user's wallet or — when Pinata pinning is
+      enabled on this deployment — POSTs the file to /upload for a CID; in
+      both cases it then signs a NIP-94 kind-1063 event via NIP-07 and
+      publishes it straight to the relays. The server never holds nostr keys.
+
+      Workers-port notes: login is nostr-only (the /login GET stays as the
+      no-JS fallback and the future atproto OAuth home); the Lightning upload
+      fee gate and the server cache-refresh ping were dropped. */ %>
+<% if (it.authedSession) { %>
+  <header class="user-bar">
+    <% if (it.authedSession.kind === "nostr") { %>
+      <span title="<%= it.authedSession.npub %>"><%= it.authedSession.npub.slice(0, 12) %>&hellip;<%= it.authedSession.npub.slice(-6) %></span>
+    <% } else { %>
+      <span><%= it.authedSession.handle || it.authedSession.did %></span>
+    <% } %>
+    <% if (it.isAdminUser) { %><a class="settings-link" href="/admin">Admin</a><% } %>
+    <a class="settings-link" href="/settings">Settings</a>
+    <form method="POST" action="/logout" class="inline-form">
+      <button type="submit" class="btn-small">Logout</button>
+    </form>
+  </header>
+
+  <section>
+    <h2>Upload Document</h2>
+    <form method="POST" action="/upload" enctype="multipart/form-data" id="upload-form">
+      <label for="title">Title</label>
+      <input type="text" id="title" name="title"
+             placeholder="Document title" required />
+
+      <label for="description">Description</label>
+      <textarea id="description" name="description" rows="3"
+                placeholder="Optional description"></textarea>
+
+      <label for="file">File</label>
+      <input type="file" id="file" name="file" required />
+
+      <% if ((it.allowedTags || []).length > 0) { %>
+      <fieldset class="tag-selector">
+        <legend>Newsgroup</legend>
+        <% for (const tag of it.allowedTags) { %>
+        <label class="tag-option">
+          <input type="checkbox" name="tags" value="<%= tag %>" />
+          <%= tag %>
+        </label>
+        <% } %>
+      </fieldset>
+      <% } %>
+
+      <fieldset class="storage-selector">
+        <legend>Storage</legend>
+        <% if (it.pinataEnabled) { %>
+        <label class="storage-option">
+          <input type="radio" name="storage" value="ipfs" checked />
+          IPFS (pinned via Pinata)
+        </label>
+        <% } %>
+        <label class="storage-option">
+          <input type="radio" name="storage" value="arweave"<% if (!it.pinataEnabled) { %> checked<% } %> />
+          Arweave (permanent, paid from your wallet)
+        </label>
+      </fieldset>
+
+      <div class="arweave-panel" id="arweave-panel" hidden>
+        <p class="arweave-estimate" id="arweave-estimate"></p>
+        <p class="arweave-help" id="arweave-help" hidden>
+          <a href="https://www.wander.app/download" target="_blank" rel="noopener noreferrer">Get the Wander wallet &rarr;</a>
+        </p>
+      </div>
+      <p class="arweave-status" id="upload-status"></p>
+      <progress class="arweave-progress" id="upload-progress" max="100" value="0" hidden></progress>
+
+      <button type="submit" id="upload-submit">Upload &amp; Publish</button>
+    </form>
+  </section>
+
+  <script type="module">
+  import { stampFile } from '/gentou/ots-stamp.js';
+
+  const AR_GATEWAY = <%~ JSON.stringify(it.arweaveGateway || "https://arweave.net") %>;
+  const NOSTR_RELAYS = <%~ JSON.stringify(it.nostrRelays || []) %>;
+  const OTS_CALENDARS = <%~ JSON.stringify(it.otsCalendars || []) %>;
+  const SESSION = <%~ JSON.stringify({
+    kind: it.authedSession.kind,
+    npub: it.authedSession.npub || null,
+    pubkey: it.authedSession.pubkey || null,
+  }) %>;
+  // Session identity for the client renderers (delete buttons, ownership).
+  window.__vonSession = SESSION;
+  const COLLECTION = <%~ JSON.stringify(it.documentCollection || 'document.yokohama.dmrg') %>;
+  // Origin tag stamped on every record; user-picked topic tags ride alongside.
+  const BASE_TAG = <%~ JSON.stringify(it.baseTag || '') %>;
+  // Wander's dispatch() sends small txs through a bundler for free; anything
+  // bigger is a regular signed L1 tx paid from the wallet.
+  const DISPATCH_MAX = 100 * 1024;
+
+  const form = document.getElementById('upload-form');
+  const fileInput = form.querySelector('input[name="file"]');
+  const panel = document.getElementById('arweave-panel');
+  const estimateEl = document.getElementById('arweave-estimate');
+  const statusEl = document.getElementById('upload-status');
+  const helpEl = document.getElementById('arweave-help');
+  const progressEl = document.getElementById('upload-progress');
+  const submitBtn = document.getElementById('upload-submit');
+  const storageOf = () => form.querySelector('input[name="storage"]:checked').value;
+  const setStatus = (t) => { statusEl.textContent = t; };
+
+  // ── Arweave via Wander (unchanged trust model: bytes are uploaded and
+  // paid for client-side; the server never even sees the tx id — the signed
+  // kind-1063 event carries it straight to the relays) ──
+  let arweavePromise = null;
+  function getArweave() {
+    // arweave.js ships node-flavored ESM that jsdelivr's /+esm transform
+    // mangles, so load the official web bundle (sets window.Arweave) lazily.
+    arweavePromise ??= new Promise((resolve, reject) => {
+      const s = document.createElement('script');
+      s.src = 'https://cdn.jsdelivr.net/npm/arweave@1.15.7/bundles/web.bundle.min.js';
+      s.onload = () => {
+        const u = new URL(AR_GATEWAY);
+        resolve(window.Arweave.init({
+          host: u.hostname,
+          port: u.port || (u.protocol === 'https:' ? 443 : 80),
+          protocol: u.protocol.replace(':', ''),
+        }));
+      };
+      s.onerror = () => reject(new Error('failed to load arweave.js'));
+      document.head.appendChild(s);
+    });
+    return arweavePromise;
+  }
+
+  async function showEstimate() {
+    if (storageOf() !== 'arweave') return;
+    const f = fileInput.files && fileInput.files[0];
+    if (!f) { estimateEl.textContent = ''; return; }
+    if (f.size < DISPATCH_MAX) {
+      estimateEl.textContent = 'Under 100 KB — free bundled upload via wallet dispatch. '
+        + '(Bundled data can take tens of minutes to appear on gateways.)';
+      return;
+    }
+    estimateEl.textContent = 'Estimating fee...';
+    try {
+      const arweave = await getArweave();
+      const winston = await arweave.transactions.getPrice(f.size);
+      estimateEl.textContent =
+        `Estimated fee: ~${arweave.ar.winstonToAr(winston)} AR (paid from your wallet)`;
+    } catch {
+      estimateEl.textContent = 'Fee estimate unavailable — the wallet will show the exact fee.';
+    }
+  }
+
+  // A completed Arweave tx survives retries so a resubmit never pays twice.
+  let paidArweaveTxId = '';
+
+  async function uploadToArweave(file) {
+    if (paidArweaveTxId) return paidArweaveTxId;
+    if (!window.arweaveWallet) {
+      helpEl.hidden = false;
+      throw new Error('Wander wallet not found — install the extension to pay for Arweave storage.');
+    }
+    setStatus('connecting wallet...');
+    await window.arweaveWallet.connect(['ACCESS_ADDRESS', 'SIGN_TRANSACTION', 'DISPATCH']);
+    const arweave = await getArweave();
+    const data = new Uint8Array(await file.arrayBuffer());
+    const tx = await arweave.createTransaction({ data });
+    tx.addTag('Content-Type', file.type || 'application/octet-stream');
+    tx.addTag('App-Name', 'von');
+    tx.addTag('File-Name', file.name);
+    let txId;
+    if (data.length < DISPATCH_MAX) {
+      setStatus('dispatching via wallet (bundled)...');
+      txId = (await window.arweaveWallet.dispatch(tx)).id;
+    } else {
+      setStatus('awaiting signature in wallet...');
+      await arweave.transactions.sign(tx); // no key → delegates to window.arweaveWallet
+      progressEl.hidden = false;
+      const uploader = await arweave.transactions.getUploader(tx);
+      while (!uploader.isComplete) {
+        await uploader.uploadChunk();
+        progressEl.value = uploader.pctComplete;
+        setStatus(`uploading chunks... ${uploader.pctComplete}%`);
+      }
+      txId = tx.id;
+    }
+    paidArweaveTxId = txId;
+    return txId;
+  }
+
+  // ── Nostr helpers (NIP-07 signing, direct relay publish) ──
+  function requireNip07() {
+    if (!window.nostr || !window.nostr.signEvent) {
+      throw new Error('No NIP-07 nostr extension found (e.g. Alby, nos2x).');
+    }
+    return window.nostr;
+  }
+
+  // User-picked newsgroup tags (checkboxes above; absent when the tags list
+  // is empty).
+  function selectedTags() {
+    return [...form.querySelectorAll('input[name="tags"]:checked')]
+      .map((cb) => cb.value);
+  }
+
+  async function signRecordEvent(fields) {
+    const tags = [
+      ['t', COLLECTION],
+      ['title', fields.title],
+      ['url', fields.url],
+      ['m', fields.mime],
+      ['x', fields.sha256Hex],
+      ['size', String(fields.size)],
+      ['fileName', fields.fileName],
+    ];
+    if (fields.cid) {
+      tags.push(['cid', fields.cid]);
+      for (const a of fields.artifacts || []) tags.push(['artifact', a]);
+    } else {
+      tags.push(['arweave', fields.arweaveTxId]);
+    }
+    tags.push(['ots', fields.otsB64]);
+    // Timestamp proof for the archive's GPG signature file, when it has one.
+    if (fields.sigOtsB64) tags.push(['sigOts', fields.sigOtsB64]);
+    // Newsgroup tags: origin instance first, then the user's picks.
+    if (BASE_TAG) tags.push(['t', BASE_TAG]);
+    for (const t of selectedTags()) {
+      if (t !== BASE_TAG) tags.push(['t', t]);
+    }
+    const ev = await requireNip07().signEvent({
+      kind: 1063,
+      created_at: Math.floor(Date.now() / 1000),
+      content: fields.description || '',
+      tags,
+    });
+    if (SESSION.pubkey && ev.pubkey !== SESSION.pubkey) {
+      throw new Error('The extension signed with a different key than your login.');
+    }
+    return ev;
+  }
+
+  function publishToRelays(ev, timeoutMs = 10000) {
+    // Publish to EVERY relay and wait until they've all acked (or the timeout).
+    // Relays don't gossip events to each other, so closing sockets as soon as
+    // one relay says OK would leave the event on only the fastest relay and
+    // invisible everywhere else — each relay must receive it independently.
+    return new Promise((resolve, reject) => {
+      const sockets = [];
+      let okCount = 0, settled = 0, done = false;
+      const finish = () => {
+        if (done) return;
+        done = true;
+        sockets.forEach((ws) => { try { ws.close(); } catch { /* ignore */ } });
+        okCount > 0 ? resolve(okCount) : reject(new Error('no relay accepted the event'));
+      };
+      const timer = setTimeout(finish, timeoutMs);
+      const settle = () => {
+        if (++settled >= NOSTR_RELAYS.length) { clearTimeout(timer); finish(); }
+      };
+      for (const url of NOSTR_RELAYS) {
+        try {
+          const ws = new WebSocket(url);
+          sockets.push(ws);
+          let acked = false;
+          const ackOnce = () => { if (!acked) { acked = true; settle(); } };
+          ws.onopen = () => ws.send(JSON.stringify(['EVENT', ev]));
+          ws.onmessage = (m) => {
+            try {
+              const msg = JSON.parse(m.data);
+              if (msg[0] === 'OK' && msg[1] === ev.id) {
+                if (msg[2]) okCount++;
+                ackOnce(); // this relay is done, but keep the others open
+              }
+            } catch { /* ignore malformed relay chatter */ }
+          };
+          ws.onerror = ackOnce;
+          ws.onclose = ackOnce;
+        } catch { settle(); }
+      }
+    });
+  }
+  // Shared with the settings page (kind-30078 publishes).
+  window.__vonPublishToRelays = publishToRelays;
+
+  // ── Upload flow ──
+  async function postUpload(formData) {
+    const res = await fetch('/upload', { method: 'POST', body: formData });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data.ok) throw new Error(data.error || `upload failed (${res.status})`);
+    return data;
+  }
+
+  form.querySelectorAll('input[name="storage"]').forEach((r) =>
+    r.addEventListener('change', () => {
+      panel.hidden = storageOf() !== 'arweave';
+      helpEl.hidden = true;
+      showEstimate();
+    }));
+  fileInput.addEventListener('change', () => {
+    paidArweaveTxId = ''; // new file → any previous tx no longer matches
+    showEstimate();
+  });
+  // Arweave-only deployments (no Pinata) start with the estimate panel open.
+  panel.hidden = storageOf() !== 'arweave';
+
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    submitBtn.disabled = true;
+    helpEl.hidden = true;
+    try {
+      const file = fileInput.files && fileInput.files[0];
+      const title = form.querySelector('input[name="title"]').value.trim();
+      const description = form.querySelector('textarea[name="description"]').value;
+      if (!file) throw new Error('choose a file first');
+      if (!title) throw new Error('a title is required');
+      const storage = storageOf();
+      // Nostr-only deployment: the record event is always signed by the
+      // user's extension. (Kept as a check so a future atproto session
+      // fails loudly instead of silently mis-publishing.)
+      if (SESSION.kind !== 'nostr') {
+        throw new Error('AT Protocol uploads are not supported on this deployment.');
+      }
+      requireNip07(); // fail before any paid step
+
+      setStatus('creating OpenTimestamps proof...');
+      const { otsB64, sha256Hex, sigOtsB64 } = await stampFile(file, OTS_CALENDARS, setStatus);
+      const mime = file.type || 'application/octet-stream';
+
+      if (storage === 'arweave') {
+        const txId = await uploadToArweave(file);
+        setStatus(`stored on Arweave: ${txId} — publishing record...`);
+        const ev = await signRecordEvent({
+          title, description, fileName: file.name, size: file.size,
+          mime, sha256Hex, otsB64, sigOtsB64,
+          arweaveTxId: txId, url: `${AR_GATEWAY.replace(/\/$/, '')}/${txId}`,
+        });
+        setStatus('publishing to relays...');
+        await publishToRelays(ev);
+        window.location.href = `/record/${SESSION.npub}/${ev.id}`;
+        return;
+      }
+
+      // IPFS: the file goes to the server, which pins it via Pinata and
+      // returns the CID; the browser then signs + publishes the record.
+      const fd = new FormData();
+      fd.set('storage', 'ipfs');
+      fd.set('file', file);
+      setStatus('uploading to server (Pinata)...');
+      const data = await postUpload(fd);
+      setStatus(`pinned as ${data.cid} — sign the record in your extension...`);
+      const ev = await signRecordEvent({
+        title, description, fileName: data.fileName || file.name, size: file.size,
+        mime, sha256Hex, otsB64, sigOtsB64,
+        cid: data.cid,
+        url: `https://ipfs.io/ipfs/${data.cid}`,
+      });
+      setStatus('publishing to relays...');
+      await publishToRelays(ev);
+      window.location.href = `/record/${SESSION.npub}/${ev.id}`;
+    } catch (err) {
+      setStatus(`error: ${err && err.message ? err.message : err}`);
+      submitBtn.disabled = false;
+      progressEl.hidden = true;
+    }
+  });
+
+  // ── Nostr record deletion (NIP-09 kind 5), delegated so the buttons in
+  // the sidebar list and the record page both work ──
+  if (SESSION.kind === 'nostr') {
+    document.addEventListener('click', async (e) => {
+      const btn = e.target.closest('.nostr-delete');
+      if (!btn) return;
+      e.preventDefault();
+      if (!confirm('Delete this record? Relays that honor deletion requests will drop it; copies may persist elsewhere.')) return;
+      btn.disabled = true;
+      try {
+        const ev = await requireNip07().signEvent({
+          kind: 5,
+          created_at: Math.floor(Date.now() / 1000),
+          content: '',
+          tags: [['e', btn.dataset.eventId], ['k', '1063']],
+        });
+        if (SESSION.pubkey && ev.pubkey !== SESSION.pubkey) {
+          throw new Error('The extension signed with a different key than your login.');
+        }
+        await publishToRelays(ev);
+        // IPFS-backed record: ask the server to drop the Pinata pin too.
+        // Best-effort (the server re-verifies ownership against its own
+        // registry); keepalive so the navigation below can't cancel it.
+        if (btn.dataset.cid) {
+          await fetch('/unpin', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ cid: btn.dataset.cid }),
+            keepalive: true,
+          }).catch(() => { /* the record deletion already succeeded */ });
+        }
+        window.location.href = '/';
+      } catch (err) {
+        alert(`delete failed: ${err && err.message ? err.message : err}`);
+        btn.disabled = false;
+      }
+    });
+  }
+  </script>
+  <hr />
+
+<% } else if (it.session) { %>
+  <%/* Logged in but not on allowlist */%>
+  <header class="user-bar">
+    <% if (it.session.kind === "nostr") { %>
+      <span title="<%= it.session.npub %>"><%= it.session.npub.slice(0, 12) %>&hellip;<%= it.session.npub.slice(-6) %></span>
+    <% } else { %>
+      <span><%= it.session.handle || it.session.did %></span>
+    <% } %>
+    <form method="POST" action="/logout" class="inline-form">
+      <button type="submit" class="btn-small">Logout</button>
+    </form>
+  </header>
+  <p class="muted">Your account does not have upload access.</p>
+  <hr />
+
+<% } else if (it.loginEnabled === false) { %>
+  <section class="login-section">
+    <p class="muted">Login is disabled: this site's allowlist is empty.</p>
+  </section>
+  <hr />
+
+<% } else { %>
+  <section class="login-section">
+    <%/* Nostr-only login on this deployment. The form's native GET action
+         (/login) is the no-JS fallback and the future atproto OAuth home. */%>
+    <form id="login-form" action="/login" method="GET">
+      <label for="handle">npub</label>
+      <input type="text" id="handle" name="handle"
+             placeholder="npub1&hellip; (or just press the button)"
+             autocapitalize="off" autocorrect="off" spellcheck="false" />
+      <div class="login-buttons">
+        <%/* The nostrich logo (mbarulli/nostr-logo). Empty alt: the button
+             text already names the protocol. */%>
+        <button type="submit" id="login-nostr" formnovalidate>
+          <img class="login-icon" src="/static/icons/nostr.svg" alt="" /> Nostr
+        </button>
+      </div>
+      <p class="muted" id="nostr-login-status"></p>
+      <p class="muted" id="nostr-login-help" hidden>
+        Logging in needs a
+        <a href="https://github.com/nostr-protocol/nips/blob/master/07.md" target="_blank" rel="noopener noreferrer">NIP-07</a>
+        extension such as
+        <a href="https://github.com/fiatjaf/nos2x" target="_blank" rel="noopener noreferrer">nos2x</a>
+        or <a href="https://getalby.com" target="_blank" rel="noopener noreferrer">Alby</a>.
+      </p>
+    </form>
+  </section>
+  <script type="module">
+  const form = document.getElementById('login-form');
+  const input = document.getElementById('handle');
+  const nostrBtn = document.getElementById('login-nostr');
+  const statusEl = document.getElementById('nostr-login-status');
+  const helpEl = document.getElementById('nostr-login-help');
+  const setBusy = (b) => { nostrBtn.disabled = b; };
+  // Set on logout and on a failed/dismissed auto-login so a page load never
+  // re-pops the extension prompt against the user's wishes. Per-tab lifetime.
+  const AUTO_OFF = 'von-nostr-autologin-off';
+
+  async function nostrLogin(expectedNpub) {
+    statusEl.textContent = 'requesting challenge...';
+    const chRes = await fetch('/nostr/challenge');
+    const chData = await chRes.json().catch(() => ({}));
+    if (!chRes.ok || !chData.challenge) {
+      throw new Error(chData.error || 'could not get a login challenge');
+    }
+    statusEl.textContent = 'sign the login event in your extension...';
+    const event = await window.nostr.signEvent({
+      kind: 22242,
+      created_at: Math.floor(Date.now() / 1000),
+      content: '',
+      tags: [
+        ['relay', window.location.origin],
+        ['challenge', chData.challenge],
+      ],
+    });
+    const res = await fetch('/nostr/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ event }),
+    });
+    const data = await res.json().catch(() => ({}));
+    // The extension may hold a different key than the npub that was typed;
+    // the server authenticates whatever the event was signed with, so warn
+    // if the resulting identity isn't the one the user entered.
+    if (res.ok && data.ok && data.npub && expectedNpub && data.npub !== expectedNpub) {
+      statusEl.textContent =
+        `note: your extension signed as ${data.npub.slice(0, 12)}…, not the npub you typed. `;
+    }
+    if (res.status === 403 && data.npub) {
+      throw new Error(`${data.npub.slice(0, 12)}… is not on this site's allowlist`);
+    }
+    if (!res.ok || !data.ok) throw new Error(data.error || 'login failed');
+    window.location.reload();
+  }
+
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const value = input.value.trim();
+    setBusy(true);
+    statusEl.textContent = '';
+    helpEl.hidden = true;
+    try {
+      if (!window.nostr || !window.nostr.signEvent) {
+        helpEl.hidden = false;
+        throw new Error('no NIP-07 extension found');
+      }
+      sessionStorage.removeItem(AUTO_OFF); // an explicit login re-arms auto-login
+      await nostrLogin(value.startsWith('npub1') ? value : null);
+    } catch (err) {
+      statusEl.textContent = `error: ${err && err.message ? err.message : err}`;
+      setBusy(false);
+    }
+  });
+
+  // ── Auto-login: if a NIP-07 extension is present, sign in without the user
+  // having to type their npub. No extension → do nothing, silently. ──
+  async function autoLogin() {
+    if (sessionStorage.getItem(AUTO_OFF)) return;
+    // Extensions inject window.nostr at their own pace; give them a moment.
+    for (let i = 0; i < 5 && !(window.nostr && window.nostr.signEvent); i++) {
+      await new Promise((r) => setTimeout(r, 200));
+    }
+    if (!window.nostr || !window.nostr.signEvent) return;
+    setBusy(true);
+    try {
+      await nostrLogin(null);
+    } catch (err) {
+      // Rejected prompt, allowlist miss, rate limit… — note it once and stop
+      // auto-retrying for this tab so every navigation doesn't nag.
+      sessionStorage.setItem(AUTO_OFF, '1');
+      statusEl.textContent = `auto-login failed: ${err && err.message ? err.message : err}`;
+      setBusy(false);
+    }
+  }
+  autoLogin();
+  </script>
+  <hr />
+<% } %>
+<script>
+// Logging out must not bounce straight back in via NIP-07 auto-login: flag
+// the tab before the logout POST navigates away.
+document.addEventListener('submit', (e) => {
+  if (e.target.matches && e.target.matches('form[action="/logout"]')) {
+    sessionStorage.setItem('von-nostr-autologin-off', '1');
+  }
+}, true);
+</script>

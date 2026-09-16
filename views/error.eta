@@ -1,0 +1,15 @@
+<h2><%= it.title || "Error" %></h2>
+<% if (it.message) { %>
+  <pre><%= it.message %></pre>
+<% } %>
+<% if (it.error) { %>
+  <p class="error"><%= it.error %></p>
+<% } %>
+<% if (it.showLogout) { %>
+  <form method="POST" action="/logout">
+    <button type="submit">Logout</button>
+  </form>
+<% } %>
+<% if (it.backLink !== false) { %>
+  <p><a href="<%= it.backUrl || '/' %>">← Back</a></p>
+<% } %>

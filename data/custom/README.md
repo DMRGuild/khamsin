@@ -1,0 +1,1 @@
+Optional HTML slots: index.html, about.html, main-header.html, main-footer.html, sidebar-header.html, sidebar-footer.html. These are trusted operator HTML. Run the seed command to copy them to KV; missing files are skipped.

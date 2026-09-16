@@ -1,0 +1,4 @@
+# npm run setup generates a random local cookie secret.
+BASE_URL=http://localhost:8787
+COOKIE_SECRET=dev-secret-change-me-in-production!!
+# PINATA_JWT=

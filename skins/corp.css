@@ -1,0 +1,285 @@
+/* Standards-registry skin: Inter sans + Roboto Mono, a white page under a
+   deep navy (#002d3c) masthead band, and the document list drawn as a
+   striped, bordered index table. Always renders in light mode regardless of
+   the OS setting; a deep-blue dark palette is kept below, disabled. */
+
+/* Inter has no Hangul, so Noto Sans KR catches Korean glyphs via per-glyph
+   fallback. */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@100..900&family=Roboto+Mono:wght@400;500;700&family=Noto+Sans+KR:wght@400;500;600;700&display=swap');
+
+/* ── Palette: light ─────────────────────────────── */
+:root {
+  color-scheme: light;
+  --bg:        #FFFFFF;
+  --bg-raised: #F7F8F9;
+  --bg-hover:  #ECEEEF;
+  --border:    #D1D5DB;   /* gray-300: table row rules */
+  --border-hi: #9CA3AF;   /* gray-400: table frame, inputs */
+  --text:      #1B1B1B;
+  --text-muted:#4B5563;
+  --text-dim:  #9CA3AF;
+  --accent:    #1C62B6;   /* blue-300: link blue */
+  --accent-dim:#D3E3FF;   /* blue-25 */
+  --red:       #C9353F;
+  --red-dim:   #FFE2E2;
+
+  /* Brand extras (not part of the base variable contract) */
+  --brand:       #002D3C; /* blue-900: masthead/footer band */
+  --brand-deep:  #001D2C; /* blue-850: ticker strip */
+  --brand-edge:  #FFFFFF; /* masthead bottom border (white in light, navy in dark) */
+  --brand-sky:   #8CC9DE; /* pale sky used on navy surfaces */
+  --btn-primary: #002D3C;
+  --th-bg:       #E5E6E8; /* table header cell */
+  --stripe:      rgba(30, 30, 30, 0.07); /* even-row striping */
+
+  --sans: "Inter", Arial, Helvetica, "Noto Sans KR", "Apple SD Gothic Neo",
+          "Malgun Gothic", sans-serif;
+  --mono: "Roboto Mono", Courier, "Courier New", "Noto Sans KR", monospace;
+}
+
+/* ── Palette: dark — currently disabled ─────────── */
+/* The skin is pinned to light mode, so this palette is inert: the
+   data-theme attribute is never set anywhere. To follow the OS again,
+   replace the selector with `@media (prefers-color-scheme: dark) { :root {`
+   and restore the closing brace. */
+:root[data-theme="dark"] {
+    color-scheme: dark;
+    --bg:        #00101C;  /* blue-950 */
+    --bg-raised: #001D2C;  /* blue-850 */
+    --bg-hover:  #13232A;
+    --border:    #213136;
+    --border-hi: #35505C;
+    --text:      #E5E6E8;
+    --text-muted:#93A8B3;
+    --text-dim:  #4E6873;
+    --accent:    #3CC0FD;  /* blue-100: dark-mode link blue */
+    --accent-dim:#002D3C;
+    --red:       #FF8389;
+    --red-dim:   #3A1215;
+
+    --brand:       #00101C; /* dark masthead goes blue-950, bordered blue-900 */
+    --brand-deep:  #00070F; /* blue-975 */
+    --brand-edge:  #002D3C;
+    --btn-primary: #18539B; /* blue-400 */
+    --th-bg:       #13232A;
+    --stripe:      rgba(255, 255, 255, 0.07);
+}
+
+/* Body copy: 16px-ish Inter at normal weight. Top padding is
+   dropped so the navy bands sit flush with the viewport edge; the column is
+   widened a little so the document table can breathe. */
+body {
+  max-width: 48rem;
+  padding: 0 1.25rem 5rem;
+  font-size: 0.95rem;
+  font-weight: 400;
+  line-height: 1.6;
+}
+
+/* ── Ticker: thin dark strip riding on top of the masthead ── */
+.ticker-tape {
+  margin: 0 0 0 calc(50% - 50vw);
+  background: var(--brand-deep);
+  border-bottom: 1px solid color-mix(in srgb, var(--brand-sky) 25%, transparent);
+}
+.ticker-item { color: var(--brand-sky); }
+.ticker-item:hover { color: #FFFFFF; }
+.ticker-item + .ticker-item {
+  border-left-color: color-mix(in srgb, var(--brand-sky) 30%, transparent);
+}
+/* Symbols sit on navy in both schemes, so they use the dark-theme hues. */
+.ticker-up { color: #3CC0FD; }
+.ticker-down { color: #FF8389; }
+
+/* ── Masthead: the full-bleed navy band ── */
+/* Inner padding = max(gutter, distance from viewport edge to the centered
+   48rem column) so the title lines up with the page content below. */
+.site-header {
+  width: 100vw;
+  margin: 0 0 1.75rem calc(50% - 50vw);
+  padding: 1.1rem max(1.25rem, calc(50vw - 22.75rem)) 1.2rem;
+  background: var(--brand);
+  border-bottom: 1px solid var(--brand-edge);
+}
+.site-header h1 {
+  font-family: var(--sans);
+  font-size: 1.35rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+.site-header h1 a { color: #FFFFFF; }
+.site-header h1 a::before { content: none; }
+.site-header p {
+  font-size: 0.88rem;
+  font-weight: 400;
+  color: var(--brand-sky);
+}
+
+/* ── Headings: large, plain, semibold page titles ── */
+.main-pane h2 {
+  font-size: 1.3rem;
+  font-weight: 600;
+  letter-spacing: normal;
+}
+.record-detail h2 {
+  font-size: 1.4rem;
+  font-weight: 600;
+}
+
+/* ── Field labels: plain sans instead of the base mono/uppercase ── */
+label, .storage-selector legend, .tag-selector legend, dt {
+  font-family: var(--sans);
+  text-transform: none;
+  letter-spacing: normal;
+  font-weight: 600;
+}
+dt { font-size: 0.78rem; }
+
+/* ── Forms: light fields, square-ish corners, blue focus ring ── */
+input[type="text"], textarea {
+  background: var(--bg);
+  border-color: var(--border-hi);
+  border-radius: 4px;
+  font-weight: 400;
+}
+input[type="text"]:focus, textarea:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 20%, transparent);
+}
+.storage-selector, .tag-selector {
+  background: var(--bg);
+  border-radius: 4px;
+}
+
+/* ── Buttons: quiet bordered default, navy primary ── */
+button {
+  background: var(--bg);
+  border-radius: 6px;
+  font-weight: 500;
+}
+button:hover { background: var(--bg-hover); }
+button[type="submit"], .btn-primary {
+  background: var(--btn-primary);
+  border-color: var(--btn-primary);
+  color: #FFFFFF;
+}
+button[type="submit"]:hover, .btn-primary:hover {
+  background: #1C62B6;
+  border-color: #1C62B6;
+}
+
+/* ── Code: Roboto Mono on faint gray, like a rendered plain-text spec ── */
+code {
+  border-radius: 3px;
+  font-weight: 400;
+}
+pre {
+  background: var(--bg-raised);
+  border-color: var(--border);
+  border-radius: 4px;
+  color: var(--text);
+}
+
+/* ── Cards (main pane) ── */
+.record, .ai-summary { border-radius: 4px; }
+
+/* ── Sidebar sections get a little air below the main pane ── */
+.side-col { margin-top: 2rem; }
+
+/* ── Document list: a striped index table ───────────────────── */
+/* One bordered, shadowed table: [author | title | date] columns, a gray
+   header strip with a translucent blue underline, gray-300 row rules, and
+   even-row striping. Rows subgrid onto the parent columns. */
+.doc-sidebar {
+  display: grid;
+  grid-template-columns:
+    [author] minmax(7rem, auto)
+    [title]  minmax(0, 1fr)
+    [date]   max-content;
+  align-content: start;
+  border: 1px solid var(--border-hi);
+  background: var(--bg);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1), 0 1px 2px rgba(0, 0, 0, 0.06);
+  font-size: 0.85rem;
+}
+/* Caption styled as the thead row. */
+.doc-sidebar > h2 {
+  grid-column: 1 / -1;
+  margin: 0;
+  padding: 0.55rem 0.8rem;
+  background: var(--th-bg);
+  border-bottom: 1px solid color-mix(in srgb, #1C62B6 30%, transparent);
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--text);
+}
+.doc-sidebar > .muted {
+  grid-column: 1 / -1;
+  padding: 0.5rem 0.8rem;
+}
+
+/* Each record is a table row: no card chrome, striped, ruled. */
+.doc-sidebar .record {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: subgrid;
+  align-items: baseline;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  border-radius: 0;
+  background: none;
+  box-shadow: none;
+  margin: 0;
+  padding: 0;
+}
+.doc-sidebar .record:nth-of-type(even) { background: var(--stripe); }
+.doc-sidebar .record:hover {
+  border-bottom-color: var(--border);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+
+/* Author cell: the blue link column of the table. */
+.doc-sidebar .record-author {
+  grid-column: author;
+  grid-row: 1;
+  padding: 0.35rem 0.8rem;
+  font-size: 0.85rem;
+}
+.doc-sidebar .record-author a { color: var(--accent); font-weight: 500; }
+.doc-sidebar .record-author a:hover { text-decoration: underline; }
+
+/* Title cell: plain body-text color. */
+.doc-sidebar .record-heading {
+  grid-column: title;
+  grid-row: 1;
+  margin: 0;
+  padding: 0.35rem 0.8rem;
+  font-size: 0.85rem;
+  font-weight: 400;
+  line-height: 1.45;
+}
+.doc-sidebar .record-heading a { color: var(--text); }
+.doc-sidebar .record-heading a:hover { color: var(--accent); }
+.doc-sidebar .record-title-link[aria-current="page"] {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+/* Date cell: muted, right-aligned, no wrap. */
+.doc-sidebar .record-date {
+  grid-column: date;
+  grid-row: 1;
+  padding: 0.35rem 0.8rem;
+  font-family: var(--sans);
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  text-align: right;
+}
+
+/* Owner's delete control drops to a second row under the title. */
+.doc-sidebar .record-delete {
+  grid-column: title / -1;
+  grid-row: 2;
+  margin: 0;
+  padding: 0 0.8rem 0.4rem;
+}

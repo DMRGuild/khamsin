@@ -1,0 +1,735 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title><%= it.meta && it.meta.title ? it.meta.title : it.siteName %></title>
+  <meta name="description" content="<%= it.meta && it.meta.description ? it.meta.description : it.siteDescription %>" />
+  <meta property="og:type" content="<%= it.meta && it.meta.type ? it.meta.type : "website" %>" />
+  <meta property="og:site_name" content="<%= it.siteName %>" />
+  <meta property="og:title" content="<%= it.meta && it.meta.title ? it.meta.title : it.siteName %>" />
+  <meta property="og:description" content="<%= it.meta && it.meta.description ? it.meta.description : it.siteDescription %>" />
+  <% if (it.meta && it.meta.url) { %><link rel="canonical" href="<%= it.meta.url %>" />
+  <meta property="og:url" content="<%= it.meta.url %>" /><% } %>
+  <% if (it.meta && it.meta.image) { %><meta property="og:image" content="<%= it.meta.image %>" /><% } %>
+  <meta name="twitter:card" content="<%= it.meta && it.meta.image ? "summary_large_image" : "summary" %>" />
+  <meta name="twitter:title" content="<%= it.meta && it.meta.title ? it.meta.title : it.siteName %>" />
+  <meta name="twitter:description" content="<%= it.meta && it.meta.description ? it.meta.description : it.siteDescription %>" />
+  <% if (it.meta && it.meta.image) { %><meta name="twitter:image" content="<%= it.meta.image %>" /><% } %>
+  <%/* escape "<" so record-supplied text can't close the script tag early */%>
+  <% if (it.meta && it.meta.jsonLd) { %><script type="application/ld+json"><%~ JSON.stringify(it.meta.jsonLd).replace(/</g, "\\u003c") %></script><% } %>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;1,9..40,300&family=DM+Mono:wght@300;400;500&family=Noto+Sans+JP:wght@300;400;500&display=swap" rel="stylesheet" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:        #0d0f11;
+      --bg-raised: #141618;
+      --bg-hover:  #1c1e21;
+      --border:    #242628;
+      --border-hi: #2e3133;
+      --text:      #e2e4e7;
+      --text-muted:#6b7280;
+      --text-dim:  #3d4147;
+      --accent:    #38bdf8;
+      --accent-dim:#0c4a6e;
+      --red:       #f87171;
+      --red-dim:   #450a0a;
+      --mono:      "DM Mono", "Hiragino Kaku Gothic ProN", "Noto Sans JP", "Noto Sans KR", monospace;
+      --sans:      "DM Sans", "Hiragino Kaku Gothic ProN", "Noto Sans JP", "Noto Sans KR", sans-serif;
+    }
+
+    /* clip (not hidden) so the full-bleed ticker's scrollbar-width overhang
+       can't add a horizontal scrollbar; clip creates no scroll container */
+    html { color-scheme: dark; overflow-x: clip; }
+
+    body {
+      font-family: var(--sans);
+      max-width: 40rem;
+      margin: 0 auto;
+      padding: 2.5rem 1.25rem 6rem;
+      color: var(--text);
+      background: var(--bg);
+      line-height: 1.65;
+      font-size: 0.9rem;
+      font-weight: 500;
+    }
+
+    /* ── Ticker tape ─────────────────────────────── */
+    /* Full-bleed marquee of the latest document titles. The track holds two
+       identical copies of the item list; translating it by -50% (one copy)
+       and looping reads as an endless tape. Populated client-side from the
+       relays (ticker.js); hidden until it has items. */
+    .ticker-tape {
+      width: 100vw;
+      margin: -2.5rem 0 2rem calc(50% - 50vw);
+      background: var(--bg-raised);
+      border-bottom: 1px solid var(--border);
+      overflow: hidden;
+      font-family: var(--mono);
+      font-size: 0.75rem;
+      white-space: nowrap;
+    }
+    .ticker-tape[hidden] { display: none !important; }
+    .ticker-track {
+      display: inline-flex;
+      animation: ticker-scroll 60s linear infinite;
+      will-change: transform;
+    }
+    .ticker-tape:hover .ticker-track,
+    .ticker-tape:focus-within .ticker-track { animation-play-state: paused; }
+    .ticker-group {
+      display: inline-flex;
+      align-items: center;
+      flex-shrink: 0;
+      /* each copy spans at least the viewport so the -50% loop stays
+         seamless even when few documents exist */
+      min-width: 100vw;
+    }
+    .ticker-item {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.45em;
+      padding: 0.55rem 1.1rem;
+      color: var(--text-muted);
+    }
+    .ticker-item:hover { color: var(--text); text-decoration: none; }
+    .ticker-title {
+      max-width: 24rem;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .ticker-item + .ticker-item { border-left: 1px solid var(--border); }
+    .ticker-symbol { font-size: 0.8em; }
+    .ticker-up { color: var(--accent); }
+    .ticker-down { color: var(--red); }
+    @keyframes ticker-scroll {
+      from { transform: translateX(0); }
+      to { transform: translateX(-50%); }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .ticker-track { animation: none; }
+      .ticker-tape { overflow-x: auto; }
+      .ticker-group[aria-hidden="true"] { display: none; }
+    }
+
+    /* ── Header ─────────────────────────────────── */
+    .site-header {
+      margin-bottom: 1.75rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.2rem;
+    }
+    .site-header h1 {
+      font-size: 1.5rem;
+      font-weight: 600;
+      letter-spacing: -0.01em;
+      font-family: var(--mono);
+    }
+    .site-header h1 a {
+      color: var(--text);
+      text-decoration: none;
+    }
+    .site-header h1 a::before {
+      content: "◈ ";
+      color: var(--accent);
+      font-size: 0.75em;
+    }
+    .site-header p {
+      font-size: 1rem;
+      color: var(--text-muted);
+      font-weight: 400;
+      letter-spacing: 0.01em;
+      white-space: pre-line;
+    }
+
+    /* ── Divider ─────────────────────────────────── */
+    hr {
+      border: none;
+      border-top: 1px solid var(--border);
+      margin: 1.5rem 0;
+    }
+
+    /* ── Typography ──────────────────────────────── */
+    h2 {
+      font-size: 0.95rem;
+      font-weight: 500;
+      letter-spacing: -0.01em;
+      margin-bottom: 1rem;
+      color: var(--text);
+    }
+    h3 {
+      font-size: 0.875rem;
+      font-weight: 500;
+      margin-bottom: 0.3rem;
+      color: var(--text);
+    }
+    p { margin-bottom: 0.75rem; }
+    p:last-child { margin-bottom: 0; }
+
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; text-decoration-color: color-mix(in srgb, var(--accent) 40%, transparent); }
+
+    /* ── Code ────────────────────────────────────── */
+    code {
+      font-family: var(--mono);
+      font-size: 0.8em;
+      font-weight: 400;
+      background: var(--bg-raised);
+      border: 1px solid var(--border);
+      padding: 0.1em 0.4em;
+      border-radius: 3px;
+      color: var(--accent);
+      word-break: break-all;
+    }
+    pre {
+      font-family: var(--mono);
+      font-size: 0.8em;
+      background: var(--bg-raised);
+      border: 1px solid var(--border);
+      padding: 1rem 1.1rem;
+      overflow-x: auto;
+      border-radius: 6px;
+      line-height: 1.7;
+      color: #a5b4c8;
+      margin: 0.75rem 0;
+    }
+    pre code {
+      background: none;
+      border: none;
+      padding: 0;
+      color: inherit;
+      font-size: 1em;
+    }
+
+    /* ── Forms ───────────────────────────────────── */
+    form { margin: 1rem 0; }
+    label {
+      display: block;
+      margin-bottom: 0.3rem;
+      font-size: 0.78rem;
+      font-weight: 400;
+      color: var(--text-muted);
+      letter-spacing: 0.03em;
+      text-transform: uppercase;
+      font-family: var(--mono);
+    }
+    input[type="text"], textarea {
+      width: 100%;
+      padding: 0.5rem 0.7rem;
+      background: var(--bg-raised);
+      border: 1px solid var(--border-hi);
+      border-radius: 5px;
+      font-size: 0.9rem;
+      font-family: var(--sans);
+      font-weight: 300;
+      color: var(--text);
+      margin-bottom: 0.6rem;
+      transition: border-color 0.15s, box-shadow 0.15s;
+      outline: none;
+    }
+    input[type="text"]:focus, textarea:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 15%, transparent);
+    }
+    input[type="file"] {
+      margin-bottom: 0.5rem;
+      font-size: 0.85rem;
+      color: var(--text-muted);
+    }
+    textarea { resize: vertical; }
+
+    /* ── Upload selectors: storage (IPFS / Arweave) + newsgroup tags.
+         One shared look so the form reads as a single unit. ── */
+    .storage-selector, .tag-selector {
+      margin: 0 0 0.6rem;
+      padding: 0.4rem 0.7rem 0.55rem;
+      border: 1px solid var(--border-hi);
+      border-radius: 5px;
+      background: var(--bg-raised);
+    }
+    .storage-selector legend, .tag-selector legend {
+      padding: 0 0.35rem;
+      font-size: 0.72rem;
+      color: var(--text-muted);
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      font-family: var(--mono);
+    }
+    .storage-option, .tag-option {
+      display: flex;
+      align-items: center;
+      gap: 0.45rem;
+      margin-bottom: 0.15rem;
+      font-size: 0.82rem;
+      text-transform: none;
+      letter-spacing: normal;
+      font-family: var(--sans);
+      color: var(--text);
+      cursor: pointer;
+    }
+    .arweave-panel { margin: 0 0 0.6rem; }
+    .arweave-estimate, .arweave-status, .arweave-help {
+      margin: 0.15rem 0;
+      font-size: 0.78rem;
+      font-family: var(--mono);
+      color: var(--text-muted);
+      overflow-wrap: anywhere;
+    }
+    .arweave-help a { color: var(--accent); }
+    .arweave-progress { width: 100%; }
+
+    /* ── Buttons ─────────────────────────────────── */
+    button {
+      padding: 0.45rem 1.1rem;
+      border: 1px solid var(--border-hi);
+      border-radius: 5px;
+      background: var(--bg-raised);
+      color: var(--text);
+      font-size: 0.85rem;
+      font-family: var(--sans);
+      font-weight: 400;
+      cursor: pointer;
+      transition: background 0.12s, border-color 0.12s;
+    }
+    button:hover {
+      background: var(--bg-hover);
+      border-color: var(--border-hi);
+    }
+    button[type="submit"], .btn-primary {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: #000;
+      font-weight: 500;
+    }
+    button[type="submit"]:hover, .btn-primary:hover {
+      background: color-mix(in srgb, var(--accent) 85%, white);
+    }
+    .btn-small {
+      padding: 0.2rem 0.65rem;
+      font-size: 0.78rem;
+      border-radius: 4px;
+    }
+    .btn-danger {
+      padding: 0.2rem 0.65rem;
+      font-size: 0.78rem;
+      border-radius: 4px;
+      background: var(--red-dim);
+      border-color: color-mix(in srgb, var(--red) 30%, transparent);
+      color: var(--red);
+    }
+    .btn-danger:hover {
+      background: color-mix(in srgb, var(--red-dim) 70%, var(--red) 30%);
+    }
+    .inline-form { display: inline; margin: 0; }
+
+    /* ── Definition list ─────────────────────────── */
+    dl { margin: 0.5rem 0; }
+    dt {
+      font-family: var(--mono);
+      font-weight: 400;
+      font-size: 0.72rem;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin-top: 0.4rem;
+    }
+    dd {
+      margin-left: 0;
+      font-size: 0.875rem;
+      color: var(--text);
+    }
+
+    /* ── User bar ────────────────────────────────── */
+    .user-bar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 1.25rem;
+      padding-bottom: 0.75rem;
+      border-bottom: 1px solid var(--border);
+      font-size: 0.83rem;
+      color: var(--text-muted);
+    }
+    .user-bar a { color: var(--text-muted); }
+    .user-bar a:hover { color: var(--accent); }
+
+    /* ── Record card ─────────────────────────────── */
+    /* A row is a small grid: author + year share the top line, the title
+       heading spans the full width beneath. Skins can flatten this into a
+       spreadsheet with subgrid. */
+    .record {
+      border: 1px solid var(--border);
+      border-radius: 7px;
+      padding: 0.9rem 1rem;
+      margin-bottom: 0.6rem;
+      background: var(--bg-raised);
+      transition: border-color 0.12s;
+      display: grid;
+      grid-template-columns: 1fr auto;
+      column-gap: 0.75rem;
+      align-items: baseline;
+    }
+    .record:hover { border-color: var(--border-hi); }
+    .record-author {
+      grid-column: 1;
+      grid-row: 1;
+      font-size: 0.78rem;
+      color: var(--text-muted);
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .record-author a { color: var(--text-muted); }
+    .record-author a:hover { color: var(--accent); }
+    .record-date {
+      grid-column: 2;
+      grid-row: 1;
+      font-size: 0.78rem;
+      color: var(--text-muted);
+      font-family: var(--mono);
+      text-align: right;
+      white-space: nowrap;
+    }
+    .record-heading {
+      grid-column: 1 / -1;
+      grid-row: 2;
+      font-size: 0.95rem;
+      font-weight: 500;
+      margin: 0.25rem 0 0;
+    }
+    .record-heading a { color: var(--text); }
+    .record-heading a:hover { color: var(--accent); }
+    .record-delete { grid-column: 1 / -1; grid-row: 3; margin: 0.5rem 0 0; }
+
+    /* ── States ──────────────────────────────────── */
+    .error {
+      color: var(--red);
+      font-size: 0.85rem;
+    }
+    .muted {
+      color: var(--text-muted);
+      font-style: italic;
+      font-size: 0.85rem;
+    }
+    /* Settings/admin panel descriptions read better upright. */
+    .settings .muted, .admin .muted { font-style: normal; }
+
+    /* ── Distributed-fetch loader ────────────────── */
+    /* The data lives on nostr relays and the authors' PDSes, not on this
+       server — the loader says exactly that: a gold signal hopping across
+       peer nodes on a dashed transmission line, over a cycling fetch log in
+       the gentou terminal's voice. Carries .muted alongside this class so
+       skins that special-case .muted (e.g. blackboard's sidebar
+       grid-column) place it correctly; everything here is skin variables
+       only. One 3s beat: the pulse crosses in 2.4s, rests 0.6s; each log
+       line lives for one crossing. */
+    .von-loader {
+      font-family: var(--mono);
+      font-style: normal;
+      font-size: 0.72rem;
+      letter-spacing: 0.02em;
+      color: var(--text-muted);
+      display: flex;
+      flex-direction: column;
+      gap: 0.55rem;
+      max-width: 24rem;
+      padding: 0.5rem 0 0.9rem;
+    }
+    .von-loader-label::after {
+      content: "▍";
+      margin-left: 2px;
+      color: var(--accent);
+      animation: von-cursor 1.1s steps(1) infinite;
+    }
+    @keyframes von-cursor {
+      0%, 49% { opacity: 1; }
+      50%, 100% { opacity: 0; }
+    }
+    .von-loader-net {
+      position: relative;
+      height: 7px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      /* the traveling pulse translates past the right edge for a moment —
+         clip it so scroll containers (blackboard's sticky sidebar) don't
+         grow a horizontal scrollbar */
+      overflow: hidden;
+    }
+    .von-loader-net::before {
+      content: "";
+      position: absolute;
+      left: 2px;
+      right: 2px;
+      top: 50%;
+      border-top: 1px dashed var(--border-hi);
+    }
+    .von-loader-node {
+      position: relative; /* paints above the line */
+      width: 5px;
+      height: 5px;
+      background: var(--border-hi);
+      transform: rotate(45deg);
+      animation: von-node-flash 3s infinite;
+    }
+    .von-loader-node:nth-child(2) { animation-delay: 0.6s; }
+    .von-loader-node:nth-child(3) { animation-delay: 1.2s; }
+    .von-loader-node:nth-child(4) { animation-delay: 1.8s; }
+    .von-loader-node:nth-child(5) { animation-delay: 2.4s; }
+    @keyframes von-node-flash {
+      0%, 3% { background: var(--accent); transform: rotate(45deg) scale(1.6); }
+      20%, 100% { background: var(--border-hi); transform: rotate(45deg) scale(1); }
+    }
+    .von-loader-pulse {
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+      animation: von-pulse-travel 3s linear infinite;
+    }
+    .von-loader-pulse::before {
+      content: "";
+      position: absolute;
+      left: 0;
+      top: 50%;
+      width: 3px;
+      height: 3px;
+      margin: -1.5px 0 0 -1.5px;
+      background: var(--accent);
+      transform: rotate(45deg);
+    }
+    @keyframes von-pulse-travel {
+      0% { transform: translateX(2px); opacity: 1; }
+      80% { transform: translateX(calc(100% - 2px)); opacity: 1; }
+      81%, 100% { transform: translateX(calc(100% - 2px)); opacity: 0; }
+    }
+    .von-loader-log {
+      position: relative;
+      height: 1.4em;
+    }
+    .von-loader-log i {
+      position: absolute;
+      inset: 0;
+      font-style: normal;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      opacity: 0;
+      animation: von-log-cycle 12s infinite;
+    }
+    .von-loader-log i::before { content: "> "; color: var(--text-dim); }
+    .von-loader-log i:nth-child(2) { animation-delay: 3s; }
+    .von-loader-log i:nth-child(3) { animation-delay: 6s; }
+    .von-loader-log i:nth-child(4) { animation-delay: 9s; }
+    @keyframes von-log-cycle {
+      0% { opacity: 0; }
+      3%, 22% { opacity: 1; }
+      25%, 100% { opacity: 0; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .von-loader-label::after,
+      .von-loader-node,
+      .von-loader-pulse,
+      .von-loader-log i { animation: none; }
+      .von-loader-pulse { display: none; }
+      .von-loader-log i { opacity: 0; }
+      .von-loader-log i:first-child { opacity: 1; }
+    }
+
+    /* ── Details / Summary ───────────────────────── */
+    details { margin: 1rem 0; }
+    summary {
+      cursor: pointer;
+      font-size: 0.85rem;
+      color: var(--text-muted);
+      font-family: var(--mono);
+      list-style: none;
+      display: flex;
+      align-items: center;
+      gap: 0.4em;
+      margin-bottom: 0.5rem;
+    }
+    summary::before {
+      content: "▸";
+      color: var(--accent);
+      font-size: 0.7em;
+      transition: transform 0.15s;
+    }
+    details[open] summary::before { transform: rotate(90deg); }
+
+    /* ── Login section ───────────────────────────── */
+    .login-section form { margin-top: 0.5rem; }
+    .login-buttons {
+      display: flex;
+      gap: 0.5rem;
+    }
+    .login-buttons button {
+      flex: 1;
+      white-space: nowrap;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.4em;
+    }
+    .login-icon {
+      height: 1em;
+      width: auto;
+    }
+    /* The nostrich artwork carries generous padding inside its viewBox, so
+       it needs a bigger box than the edge-to-edge butterfly to read as the
+       same visual size. Taller than the text line on purpose; the negative
+       block margin lets it bleed into the button padding instead of
+       growing the button. */
+    #login-nostr .login-icon {
+      height: 2em;
+      margin-block: -0.6em;
+    }
+
+    /* ── Back navigation ─────────────────────────── */
+    .back-nav {
+      margin-bottom: 1.25rem;
+      font-size: 0.83rem;
+    }
+    .back-nav a { color: var(--text-muted); }
+    .back-nav a:hover { color: var(--accent); }
+
+    /* ── AI summary ──────────────────────────────── */
+    .ai-summary {
+      border: 1px solid var(--border);
+      border-radius: 7px;
+      padding: 0.9rem 1rem;
+      margin: 1rem 0;
+      background: var(--bg-raised);
+    }
+    .ai-summary[hidden] { display: none !important; }
+    .ai-summary h3 {
+      font-family: var(--mono);
+      font-size: 0.72rem;
+      font-weight: 400;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin-bottom: 0.4rem;
+    }
+    .ai-summary-body {
+      color: var(--text);
+    }
+    .ai-summary-body > :last-child {
+      margin-bottom: 0;
+    }
+    .ai-summary-body h1, .ai-summary-body h2, .ai-summary-body h3,
+    .ai-summary-body h4, .ai-summary-body h5, .ai-summary-body h6 {
+      font-size: 0.875rem;
+      font-weight: 500;
+      margin-bottom: 0.3rem;
+      color: var(--text);
+    }
+    .ai-summary-body h1 .anchor, .ai-summary-body h2 .anchor,
+    .ai-summary-body h3 .anchor, .ai-summary-body h4 .anchor,
+    .ai-summary-body h5 .anchor, .ai-summary-body h6 .anchor {
+      display: none;
+    }
+    .ai-summary-body ul, .ai-summary-body ol {
+      margin: 0 0 0.75rem 1.25rem;
+    }
+    .ai-summary-body li {
+      margin-bottom: 0.2rem;
+    }
+    .ai-summary-body blockquote {
+      border-left: 2px solid var(--border-hi);
+      padding-left: 0.75rem;
+      color: var(--text-muted);
+      margin-bottom: 0.75rem;
+    }
+    .ai-summary-body.muted {
+      color: var(--text-muted);
+      font-style: italic;
+      font-size: 0.85rem;
+    }
+    .ai-summary-actions {
+      display: flex;
+      gap: 0.5rem;
+      flex-wrap: wrap;
+      margin-top: 0.5rem;
+    }
+
+    /* ── Record detail ───────────────────────────── */
+    .record-detail h2 {
+      font-size: 1.1rem;
+      font-weight: 500;
+      margin-bottom: 0.6rem;
+    }
+    .record-detail .description {
+      color: var(--text-muted);
+      margin-bottom: 0.75rem;
+    }
+
+    /* ── Artifact list ───────────────────────────── */
+    .artifact-list {
+      list-style: none;
+      margin: 0.2rem 0;
+      display: flex;
+      flex-direction: column;
+      gap: 0.2rem;
+    }
+
+    /* ── Scrollbar ───────────────────────────────── */
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: var(--border-hi); border-radius: 3px; }
+    ::-webkit-scrollbar-thumb:hover { background: var(--text-dim); }
+
+  </style>
+  <% if (it.skinCss) { %><style><%~ it.skinCss %></style><% } %>
+</head>
+<body>
+  <%/* Shared client config for the data layer (records.js, ticker.js,
+       record-page.js, tipjar, gentou). Escape "<" so config values can't
+       close the script tag early. */%>
+  <script>window.VON = <%~ JSON.stringify({
+    relays: it.nostrRelays || [],
+    collection: it.documentCollection,
+    baseTag: it.baseTag || "",
+    arweaveGateway: it.arweaveGateway || "https://arweave.net",
+    otsCalendars: it.otsCalendars || [],
+    linkCollection: it.linkCollection,
+    profileDTag: it.profileDTag,
+    lightningCollection: it.lightningCollection,
+    siteName: it.siteName,
+    zapsDisabled: !!it.zapsDisabled,
+  }).replace(/</g, "\\u003c") %>;</script>
+  <%/* window.vonLn helpers, loaded once for every page — module scripts run
+       in document order, so body and sidebar scripts can rely on it. */%>
+  <%~ include("@partials/lightning-core", {}) %>
+  <%/* Network-wide ticker tape, populated client-side from the relays
+       (ticker.js). Stays hidden (renders nothing) until it has items. */%>
+  <div class="ticker-tape" id="ticker-tape" hidden>
+    <div class="ticker-track" id="ticker-track"></div>
+  </div>
+  <div class="site-header">
+    <h1><a href="/"><%= it.siteName %></a></h1>
+    <p><%= it.siteDescription %></p>
+  </div>
+  <div class="layout">
+    <main class="main-pane">
+      <% if (it.customMainHeader) { %><div class="custom-main-header"><%~ it.customMainHeader %></div><% } %>
+      <%~ it.body %>
+      <% if (it.customMainFooter) { %><div class="custom-main-footer"><%~ it.customMainFooter %></div><% } %>
+    </main>
+    <% if (it.sidebar) { %>
+    <div class="side-col">
+      <% if (it.customSidebarHeader) { %><div class="custom-sidebar-header"><%~ it.customSidebarHeader %></div><% } %>
+      <%~ include("@partials/authbar", { authedSession: it.authedSession, session: it.session, arweaveGateway: it.arweaveGateway, nostrRelays: it.nostrRelays, otsCalendars: it.otsCalendars, loginEnabled: it.loginEnabled, documentCollection: it.documentCollection, allowedTags: it.allowedTags, baseTag: it.baseTag, isAdminUser: it.isAdminUser, pinataEnabled: it.pinataEnabled }) %>
+      <%~ include("@partials/sidebar", { currentDid: it.currentDid, currentRkey: it.currentRkey, nostrRelays: it.nostrRelays }) %>
+      <% if (it.customSidebarFooter) { %><div class="custom-sidebar-footer"><%~ it.customSidebarFooter %></div><% } %>
+    </div>
+    <% } %>
+  </div>
+  <%/* Client data layer: document listing (sidebar) + ticker. Both no-op
+       gracefully on pages without their mount points. */%>
+  <script type="module" src="/static/js/records.js"></script>
+  <script type="module" src="/static/js/ticker.js"></script>
+</body>
+</html>

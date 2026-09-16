@@ -1,0 +1,13 @@
+<p class="error">Access denied. Your account is not on the allowlist.</p>
+<% if (it.did) { %>
+  <p>DID: <code><%= it.did %></code></p>
+<% } %>
+<% if (it.handle) { %>
+  <p>Handle: <code><%= it.handle %></code></p>
+<% } %>
+<% if (it.npub) { %>
+  <p>Nostr: <code><%= it.npub %></code></p>
+<% } %>
+<form method="POST" action="/logout">
+  <button type="submit">Logout</button>
+</form>

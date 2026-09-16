@@ -1,0 +1,742 @@
+<% /* Shared browser-side Lightning + zap helpers, exposed as window.vonLn.
+
+      Everything here runs in the tipper's / author's own browser against
+      public data (nostr kind-0 profiles and kind-9735 zap receipts, public
+      PDS records) and the author's own LNURL provider — the von server is
+      never involved in address resolution, payment, or receipt reading.
+
+      Workers-port additions vs the parent: relayQuery/relayAwait, bech32
+      encode helpers, getPdsRecordRkey/listPdsRecords, and fetchVonNames are
+      exported so the client data layer (/static/js/von-data.js) can reuse
+      them for the listing/ticker/record-page rendering that moved from the
+      server into the browser.
+
+      Included once, from the layout, before the page body — module scripts
+      execute in document order, so every later script can use window.vonLn.
+      Do not include it from body templates or partials. */ %>
+<script type="module">
+// --- bech32 (BIP-173), enough for npub / lnurl decoding. CHARSET and GEN
+// are the fixed constants from the spec: CHARSET maps each 5-bit value to
+// its letter (index = value), GEN holds the BCH checksum generator
+// coefficients used by polymod. ---
+const B32_CHARSET = 'qpzry9x8gf2tvdw0s3jn54khce6mua7l';
+const B32_GEN = [0x3b6a57b2, 0x26508e6d, 0x1ea119fa, 0x3d4233dd, 0x2a1462b3];
+
+function b32Polymod(values) {
+  let chk = 1;
+  for (const v of values) {
+    const b = chk >> 25;
+    chk = ((chk & 0x1ffffff) << 5) ^ v;
+    for (let i = 0; i < 5; i++) if ((b >> i) & 1) chk ^= B32_GEN[i];
+  }
+  return chk;
+}
+
+function bech32Decode(str) {
+  str = String(str).toLowerCase();
+  const pos = str.lastIndexOf('1');
+  if (pos < 1 || pos + 7 > str.length) return null;
+  const hrp = str.slice(0, pos);
+  const data = [];
+  for (const ch of str.slice(pos + 1)) {
+    const d = B32_CHARSET.indexOf(ch);
+    if (d === -1) return null;
+    data.push(d);
+  }
+  const hrpExp = [];
+  for (const ch of hrp) hrpExp.push(ch.charCodeAt(0) >> 5);
+  hrpExp.push(0);
+  for (const ch of hrp) hrpExp.push(ch.charCodeAt(0) & 31);
+  if (b32Polymod(hrpExp.concat(data)) !== 1) return null;
+  let acc = 0, bits = 0;
+  const bytes = [];
+  for (const w of data.slice(0, -6)) {
+    acc = (acc << 5) | w;
+    bits += 5;
+    while (bits >= 8) { bits -= 8; bytes.push((acc >> bits) & 255); }
+  }
+  return { hrp, bytes: new Uint8Array(bytes) };
+}
+
+function npubToHex(npub) {
+  const d = bech32Decode(npub);
+  if (!d || d.hrp !== 'npub' || d.bytes.length !== 32) return null;
+  return Array.from(d.bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+function bech32Encode(hrp, bytes) {
+  const words = [];
+  let acc = 0, bits = 0;
+  for (const b of bytes) {
+    acc = (acc << 8) | b;
+    bits += 8;
+    while (bits >= 5) { bits -= 5; words.push((acc >> bits) & 31); }
+  }
+  if (bits > 0) words.push((acc << (5 - bits)) & 31);
+  const hrpExp = [];
+  for (const ch of hrp) hrpExp.push(ch.charCodeAt(0) >> 5);
+  hrpExp.push(0);
+  for (const ch of hrp) hrpExp.push(ch.charCodeAt(0) & 31);
+  const mod = b32Polymod(hrpExp.concat(words, [0, 0, 0, 0, 0, 0])) ^ 1;
+  const chk = [];
+  for (let i = 0; i < 6; i++) chk.push((mod >> (5 * (5 - i))) & 31);
+  return hrp + '1' + words.concat(chk).map((w) => B32_CHARSET[w]).join('');
+}
+
+function hexToNpub(hex) {
+  if (!/^[0-9a-f]{64}$/i.test(hex || '')) return null;
+  const bytes = new Uint8Array(32);
+  for (let i = 0; i < 32; i++) bytes[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+  return bech32Encode('npub', bytes);
+}
+
+// NIP-19 note1… pointer for a bare event id (hex) — used for external links.
+function noteEncode(idHex) {
+  if (!/^[0-9a-f]{64}$/i.test(idHex || '')) return null;
+  const bytes = new Uint8Array(32);
+  for (let i = 0; i < 32; i++) bytes[i] = parseInt(idHex.slice(i * 2, i * 2 + 2), 16);
+  return bech32Encode('note', bytes);
+}
+
+// LUD-16 name@domain, or LUD-06 bech32 lnurl. Addresses come from
+// user-controlled records, so everything downstream treats them as untrusted
+// text: rendered via textContent only, endpoints must resolve to https.
+const LUD16_RE = /^[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9-]{1,63}(\.[A-Za-z0-9-]{1,63})+$/;
+function isLightningAddress(s) {
+  return typeof s === 'string' &&
+    (LUD16_RE.test(s) || /^lnurl1[ac-hj-np-z02-9]{6,2000}$/i.test(s));
+}
+
+// Lightning address → https URL of its LNURL-pay endpoint, or null.
+function payEndpoint(addr) {
+  if (LUD16_RE.test(addr)) {
+    const at = addr.lastIndexOf('@');
+    return `https://${addr.slice(at + 1)}/.well-known/lnurlp/${encodeURIComponent(addr.slice(0, at))}`;
+  }
+  const d = bech32Decode(addr);
+  if (!d || d.hrp !== 'lnurl') return null;
+  try {
+    const url = new URL(new TextDecoder().decode(d.bytes));
+    return url.protocol === 'https:' ? url.href : null;
+  } catch { return null; }
+}
+
+// --- relay plumbing ---
+
+// Close without the "closed before the connection is established" console
+// noise: sockets still connecting are told to close themselves on open
+// (which also stops them from sending their REQ).
+function closeWs(ws) {
+  try {
+    if (ws.readyState === WebSocket.CONNECTING) {
+      ws.onmessage = null;
+      ws.onopen = () => { try { ws.close(); } catch { /* already closed */ } };
+    } else if (ws.readyState === WebSocket.OPEN) {
+      ws.close();
+    }
+  } catch { /* already closed */ }
+}
+
+// One-shot query fanned out to every relay: collect EVENTs (deduped by id)
+// until each relay reaches EOSE or the timeout fires.
+function relayQuery(relays, filter, timeoutMs = 4000) {
+  const events = new Map();
+  return new Promise((resolve) => {
+    let open = 0, done = false;
+    const sockets = [];
+    const finish = () => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      for (const ws of sockets) closeWs(ws);
+      resolve([...events.values()]);
+    };
+    const timer = setTimeout(finish, timeoutMs);
+    for (const url of relays) {
+      let ws;
+      try { ws = new WebSocket(url); } catch { continue; }
+      sockets.push(ws);
+      open++;
+      const sub = 'vonln' + Math.random().toString(36).slice(2, 10);
+      ws.onopen = () => ws.send(JSON.stringify(['REQ', sub, filter]));
+      ws.onmessage = (m) => {
+        try {
+          const msg = JSON.parse(m.data);
+          if (msg[0] === 'EVENT' && msg[1] === sub) {
+            const ev = msg[2];
+            if (ev && typeof ev.id === 'string') events.set(ev.id, ev);
+          } else if (msg[0] === 'EOSE' && msg[1] === sub) ws.close();
+        } catch { /* malformed relay message */ }
+      };
+      ws.onerror = () => { try { ws.close(); } catch { /* already closed */ } };
+      ws.onclose = () => { if (--open <= 0) finish(); };
+    }
+    if (open <= 0) finish();
+  });
+}
+
+// Stay subscribed past EOSE and resolve with the first event the async
+// `accept` predicate approves, or null on timeout. Used to notice the zap
+// receipt landing after the user pays the invoice.
+function relayAwait(relays, filter, accept, timeoutMs = 120000) {
+  return new Promise((resolve) => {
+    let done = false;
+    const sockets = [];
+    const finish = (val) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      for (const ws of sockets) closeWs(ws);
+      resolve(val);
+    };
+    const timer = setTimeout(() => finish(null), timeoutMs);
+    for (const url of relays) {
+      let ws;
+      try { ws = new WebSocket(url); } catch { continue; }
+      sockets.push(ws);
+      const sub = 'vonzap' + Math.random().toString(36).slice(2, 10);
+      ws.onopen = () => ws.send(JSON.stringify(['REQ', sub, filter]));
+      ws.onmessage = async (m) => {
+        try {
+          const msg = JSON.parse(m.data);
+          if (msg[0] === 'EVENT' && msg[1] === sub && await accept(msg[2])) finish(msg[2]);
+        } catch { /* malformed relay message */ }
+      };
+      ws.onerror = () => { try { ws.close(); } catch { /* already closed */ } };
+    }
+    if (sockets.length === 0) finish(null);
+  });
+}
+
+const verifyEventFn = async () =>
+  (await import('https://cdn.jsdelivr.net/npm/nostr-tools@2.23.12/+esm')).verifyEvent;
+
+// Newest kind-0 profile event for a pubkey from the given relays.
+// verify=true checks the schnorr signature (lazy nostr-tools import) so a
+// misbehaving relay cannot redirect tips to its own address.
+async function fetchKind0(relays, pubkey, { verify = false, timeoutMs = 4000 } = {}) {
+  const sorted = (await relayQuery(relays, { kinds: [0], authors: [pubkey], limit: 1 }, timeoutMs))
+    .filter((ev) => ev.kind === 0 && ev.pubkey === pubkey && typeof ev.content === 'string')
+    .sort((a, b) => b.created_at - a.created_at);
+  if (sorted.length === 0) return null;
+  if (!verify) return sorted[0];
+  const verifyEvent = await verifyEventFn();
+  for (const ev of sorted) if (verifyEvent(ev)) return ev;
+  return null;
+}
+
+function lud16FromKind0(ev) {
+  if (!ev) return null;
+  try {
+    const p = JSON.parse(ev.content);
+    for (const a of [p.lud16, p.lud06]) if (isLightningAddress(a)) return a;
+  } catch { /* profile content is not JSON */ }
+  return null;
+}
+
+// --- atproto public reads ---
+
+// Per-page-load memo so the tip flow's multiple lookups (address, link,
+// zap key) don't re-fetch the same DID document or record.
+const _memo = new Map();
+const memo = (key, fn) => {
+  if (!_memo.has(key)) _memo.set(key, fn());
+  return _memo.get(key);
+};
+
+// DID document, memoized. did:web with port/path segments is not supported
+// (rare; resolution just returns null).
+function resolveDidDoc(did) {
+  return memo(`doc|${did}`, () => resolveDidDocUncached(did));
+}
+async function resolveDidDocUncached(did) {
+  try {
+    if (did.startsWith('did:plc:')) {
+      return await (await fetch(`https://plc.directory/${encodeURIComponent(did)}`)).json();
+    }
+    if (did.startsWith('did:web:')) {
+      const host = did.slice('did:web:'.length);
+      if (host.includes(':') || host.includes('%')) return null;
+      return await (await fetch(`https://${host}/.well-known/did.json`)).json();
+    }
+    return null;
+  } catch { return null; }
+}
+
+// DID → PDS base URL via the DID document.
+async function resolvePds(did) {
+  const doc = await resolveDidDoc(did);
+  const svc = doc && (doc.service || []).find((s) =>
+    s.id === '#atproto_pds' || s.type === 'AtprotoPersonalDataServer');
+  if (!svc || typeof svc.serviceEndpoint !== 'string') return null;
+  try {
+    const url = new URL(svc.serviceEndpoint);
+    return url.protocol === 'https:' ? url.origin : null;
+  } catch { return null; }
+}
+
+// Public read of a single `self` record; null on any failure.
+function getPdsRecord(pds, repo, collection) {
+  return memo(`rec|${pds}|${repo}|${collection}`, () => getPdsRecordRkey(pds, repo, collection, 'self'));
+}
+// Public read of one record by rkey (uncached); null on any failure.
+async function getPdsRecordRkey(pds, repo, collection, rkey) {
+  try {
+    const u = new URL(`${pds}/xrpc/com.atproto.repo.getRecord`);
+    u.searchParams.set('repo', repo);
+    u.searchParams.set('collection', collection);
+    u.searchParams.set('rkey', rkey);
+    const res = await fetch(u);
+    return res.ok ? await res.json() : null;
+  } catch { return null; }
+}
+
+// Public listing of a repo's records in one collection; [] on any failure.
+async function listPdsRecords(pds, repo, collection, limit = 50) {
+  try {
+    const u = new URL(`${pds}/xrpc/com.atproto.repo.listRecords`);
+    u.searchParams.set('repo', repo);
+    u.searchParams.set('collection', collection);
+    u.searchParams.set('limit', String(limit));
+    const res = await fetch(u);
+    if (!res.ok) return [];
+    const data = await res.json();
+    return Array.isArray(data.records) ? data.records : [];
+  } catch { return []; }
+}
+
+// Author identity (npub or DID, plus the linked group identity) → Lightning
+// address, or null when the author has published none anywhere.
+async function resolveTipAddress({ author, group, relays, lightningCollection, linkCollection }) {
+  const fromNostr = async (npub) => {
+    const hex = npubToHex(npub);
+    return hex ? lud16FromKind0(await fetchKind0(relays, hex, { verify: true })) : null;
+  };
+  const fromAtproto = async (did) => {
+    const pds = await resolvePds(did);
+    if (!pds) return null;
+    const rec = await getPdsRecord(pds, did, lightningCollection);
+    const addr = rec && rec.value ? rec.value.address : null;
+    if (isLightningAddress(addr)) return addr;
+    // No explicit record — fall back to the linked nostr profile's lud16.
+    const link = await getPdsRecord(pds, did, linkCollection);
+    const npub = link && link.value ? link.value.nostr : null;
+    return typeof npub === 'string' && npub.startsWith('npub1') ? fromNostr(npub) : null;
+  };
+  if (typeof author !== 'string') return null;
+  if (author.startsWith('npub1')) {
+    return (await fromNostr(author)) ??
+      (group && group !== author && group.startsWith('did:') ? fromAtproto(group) : null);
+  }
+  return author.startsWith('did:') ? fromAtproto(author) : null;
+}
+
+// --- LNURL-pay ---
+
+// Step 1: payRequest parameters from the author's provider. allowsNostr +
+// nostrPubkey (LUD-06/NIP-57 extension) mean the provider will sign and
+// publish a zap receipt for invoices that carry a zap request.
+async function payParams(addr) {
+  const endpoint = payEndpoint(addr);
+  if (!endpoint) throw new Error('unsupported lightning address');
+  const p = await (await fetch(endpoint)).json();
+  const cb = p && p.tag === 'payRequest' && typeof p.callback === 'string'
+    ? new URL(p.callback)
+    : null;
+  if (!cb || cb.protocol !== 'https:') throw new Error('invalid LNURL-pay response');
+  const nostrPubkey = typeof p.nostrPubkey === 'string' && /^[0-9a-f]{64}$/i.test(p.nostrPubkey)
+    ? p.nostrPubkey.toLowerCase()
+    : null;
+  return {
+    callback: cb.href,
+    minSats: Math.max(1, Math.ceil((+p.minSendable || 1000) / 1000)),
+    maxSats: Math.max(1, Math.floor((+p.maxSendable || 100_000_000_000) / 1000)),
+    allowsNostr: p.allowsNostr === true && nostrPubkey !== null,
+    nostrPubkey,
+  };
+}
+
+// Step 2: amount in sats → bolt11 invoice. An optional signed zap request
+// (NIP-57) rides along in the `nostr` query param.
+async function requestInvoice(params, sats, { zapRequest = null } = {}) {
+  const u = new URL(params.callback);
+  u.searchParams.set('amount', String(Math.round(sats) * 1000));
+  if (zapRequest) u.searchParams.set('nostr', JSON.stringify(zapRequest));
+  const d = await (await fetch(u)).json();
+  if (!d || d.status === 'ERROR' || typeof d.pr !== 'string' || !/^ln[a-z0-9]{20,}$/i.test(d.pr)) {
+    throw new Error((d && typeof d.reason === 'string' && d.reason) || 'could not get an invoice');
+  }
+  return d.pr;
+}
+
+// Spot BTC/USD from public tickers (first source that answers), cached in
+// sessionStorage for 5 minutes so browsing several records doesn't hammer
+// the APIs — plus a per-page single-flight memo so concurrent callers on
+// first load share one fetch. Display-only, so staleness and source
+// differences are fine. Returns a number or null.
+function fetchBtcUsd() {
+  return memo('btcusd', fetchBtcUsdUncached);
+}
+async function fetchBtcUsdUncached() {
+  const KEY = 'vonln-btcusd';
+  try {
+    const c = JSON.parse(sessionStorage.getItem(KEY) || 'null');
+    if (c && typeof c.rate === 'number' && Date.now() - c.at < 300000) return c.rate;
+  } catch { /* no storage / bad cache */ }
+  const sources = [
+    ['https://api.coinbase.com/v2/prices/BTC-USD/spot', (d) => +d.data.amount],
+    ['https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd', (d) => +d.bitcoin.usd],
+    ['https://blockchain.info/ticker', (d) => +d.USD.last],
+  ];
+  for (const [url, pick] of sources) {
+    try {
+      const rate = pick(await (await fetch(url)).json());
+      if (Number.isFinite(rate) && rate > 0) {
+        try { sessionStorage.setItem(KEY, JSON.stringify({ rate, at: Date.now() })); } catch { /* storage full/blocked */ }
+        return rate;
+      }
+    } catch { /* next source */ }
+  }
+  return null;
+}
+
+// --- NIP-57 zaps ---
+
+// bolt11 invoice → amount in msat, or null (malformed or amountless).
+// Only the human-readable part is parsed; 1 BTC = 1e11 msat, multipliers
+// m/u/n/p per BOLT-11.
+function bolt11AmountMsat(pr) {
+  const m = /^ln(?:bcrt|bc|tb)(\d+)([munp])?1/.exec(String(pr || '').toLowerCase());
+  if (!m) return null;
+  const mult = { m: 1e8, u: 1e5, n: 1e2, p: 0.1 }[m[2]] ?? 1e11;
+  const msat = Number(m[1]) * mult;
+  return Number.isSafeInteger(msat) && msat > 0 ? msat : null;
+}
+
+// Build + sign a zap request (kind 9734). Signed by the tipper's NIP-07
+// extension when present, else by a throwaway key (anonymous zap) — either
+// way the key never matters for where the money goes, only for who the zap
+// is publicly attributed to. `atUri` tags the request with an atproto
+// document URI (`r` tag): the LNURL provider copies the whole request into
+// the receipt's description, which is how zaps on atproto documents stay
+// attributable per document without being nostr events themselves.
+async function makeZapRequest({ recipientPubkey, eventId, atUri, amountMsat, relays, comment = '' }) {
+  const tags = [
+    ['relays', ...relays],
+    ['amount', String(amountMsat)],
+    ['p', recipientPubkey],
+  ];
+  if (eventId) tags.push(['e', eventId]);
+  if (atUri) tags.push(['r', atUri]);
+  const tmpl = {
+    kind: 9734,
+    created_at: Math.floor(Date.now() / 1000),
+    content: comment,
+    tags,
+  };
+  const nip07 = globalThis.nostr;
+  if (nip07 && nip07.signEvent) {
+    try { return await nip07.signEvent(tmpl); } catch { /* declined — go anonymous */ }
+  }
+  const nt = await import('https://cdn.jsdelivr.net/npm/nostr-tools@2.23.12/+esm');
+  return nt.finalizeEvent(tmpl, nt.generateSecretKey());
+}
+
+// Zap receipts (kind 9735) for a set of event ids (`#e`) or a recipient
+// pubkey (`#p`). The pubkey form returns the recipient's recent zaps across
+// all their content (relay-capped at 500) — callers narrow it down via
+// verifyZapReceipts' atUri filter.
+function fetchZapReceipts(relays, { eventIds = null, pubkey = null } = {}, timeoutMs = 5000) {
+  const filter = { kinds: [9735], limit: 500 };
+  if (eventIds) filter['#e'] = eventIds;
+  else if (pubkey) filter['#p'] = [pubkey];
+  else return Promise.resolve([]);
+  return relayQuery(relays, filter, timeoutMs);
+}
+
+// Keep only receipts that hold up: correct kind, an `e` tag for the expected
+// event (when given), the expected AT-URI inside the embedded zap request
+// (when given), a parseable bolt11 amount, a valid signature, and — when the
+// author's LNURL server key is known — that exact signer. Returns
+// [{ event, msat }].
+async function verifyZapReceipts(receipts, { nostrPubkey = null, eventId = null, atUri = null } = {}) {
+  const out = [];
+  if (!Array.isArray(receipts) || receipts.length === 0) return out;
+  const verifyEvent = await verifyEventFn();
+  for (const ev of receipts) {
+    if (!ev || ev.kind !== 9735 || !Array.isArray(ev.tags)) continue;
+    if (nostrPubkey && ev.pubkey !== nostrPubkey) continue;
+    if (eventId && !ev.tags.some((t) => t[0] === 'e' && t[1] === eventId)) continue;
+    if (atUri && !zapRequestOf(ev)?.tags?.some((t) => t[0] === 'r' && t[1] === atUri)) continue;
+    const bolt11 = ev.tags.find((t) => t[0] === 'bolt11');
+    const msat = bolt11 ? bolt11AmountMsat(bolt11[1]) : null;
+    if (!msat) continue;
+    if (!verifyEvent(ev)) continue;
+    out.push({ event: ev, msat });
+  }
+  return out;
+}
+
+// The zap request the provider embedded in a receipt's description tag,
+// or null.
+function zapRequestOf(receipt) {
+  try {
+    const desc = receipt.tags.find((t) => t[0] === 'description');
+    const zr = desc ? JSON.parse(desc[1]) : null;
+    return zr && zr.kind === 9734 && Array.isArray(zr.tags) ? zr : null;
+  } catch { return null; }
+}
+
+// Who sent a zap, per the embedded zap request — but only when that
+// request's own signature holds up. Providers don't all check it, and an
+// unsigned request could name anyone, so no valid signature means the zap
+// is treated as anonymous (null).
+async function zapperOf(receipt) {
+  const zr = zapRequestOf(receipt);
+  if (!zr || typeof zr.pubkey !== 'string') return null;
+  const verifyEvent = await verifyEventFn();
+  try { return verifyEvent(zr) ? zr.pubkey : null; } catch { return null; }
+}
+
+// Newest signature-valid kind-0 profile per pubkey, in one batched query.
+async function fetchProfiles(relays, pubkeys, timeoutMs = 4000) {
+  const out = new Map();
+  if (pubkeys.length === 0) return out;
+  const want = new Set(pubkeys);
+  const evs = (await relayQuery(relays, { kinds: [0], authors: pubkeys, limit: pubkeys.length * 3 }, timeoutMs))
+    .filter((ev) => ev.kind === 0 && typeof ev.content === 'string' && want.has(ev.pubkey))
+    .sort((a, b) => b.created_at - a.created_at);
+  const verifyEvent = await verifyEventFn();
+  for (const ev of evs) {
+    if (!out.has(ev.pubkey) && verifyEvent(ev)) out.set(ev.pubkey, ev);
+  }
+  return out;
+}
+
+// Display name from a kind-0 profile event; trimmed, length-capped, null
+// when absent. Callers must render it via textContent — it is untrusted.
+function profileNameOf(ev) {
+  if (!ev) return null;
+  try {
+    const p = JSON.parse(ev.content);
+    for (const n of [p.display_name, p.name]) {
+      if (typeof n === 'string' && n.trim()) return n.trim().slice(0, 40);
+    }
+  } catch { /* not JSON */ }
+  return null;
+}
+
+// Kind-0 profile picture URL: https only, sane length — untrusted data
+// bound for an <img src>.
+function profilePictureOf(ev) {
+  if (!ev) return null;
+  try {
+    const p = JSON.parse(ev.content);
+    const raw = typeof p.picture === 'string' ? p.picture.trim() : '';
+    if (!raw || raw.length > 512) return null;
+    const url = new URL(raw);
+    return url.protocol === 'https:' ? raw : null;
+  } catch { return null; }
+}
+
+// Atproto display name for a DID: profile displayName, else the handle
+// from the DID document, else null. Untrusted text — textContent only.
+async function atprotoNameOf(did) {
+  const pds = await resolvePds(did);
+  if (!pds) return null;
+  const prof = await getPdsRecord(pds, did, 'app.bsky.actor.profile');
+  const dn = prof && prof.value && typeof prof.value.displayName === 'string'
+    ? prof.value.displayName.trim()
+    : '';
+  if (dn) return dn.slice(0, 40);
+  const doc = await resolveDidDoc(did);
+  const aka = doc && Array.isArray(doc.alsoKnownAs)
+    ? doc.alsoKnownAs.find((a) => typeof a === 'string' && a.startsWith('at://'))
+    : null;
+  return aka ? aka.slice(5, 45) : null;
+}
+
+const DID_RE = /^did:[a-z]+:[A-Za-z0-9._%-]+$/;
+
+// Newest signature-valid link claim (kind 30078, d = linkDTag) per pubkey:
+// pubkey → claimed DID. A claim only proves the nostr side; callers must
+// confirm the PDS points back (isMutualLink) before trusting it.
+async function fetchLinkClaims(relays, pubkeys, linkDTag, timeoutMs = 4000) {
+  const out = new Map();
+  if (pubkeys.length === 0) return out;
+  const want = new Set(pubkeys);
+  const evs = (await relayQuery(relays, { kinds: [30078], authors: pubkeys, '#d': [linkDTag], limit: pubkeys.length * 3 }, timeoutMs))
+    .filter((ev) => ev.kind === 30078 && want.has(ev.pubkey) &&
+      typeof ev.content === 'string' && Array.isArray(ev.tags) &&
+      ev.tags.some((t) => t[0] === 'd' && t[1] === linkDTag))
+    .sort((a, b) => b.created_at - a.created_at);
+  const verifyEvent = await verifyEventFn();
+  for (const ev of evs) {
+    if (out.has(ev.pubkey)) continue;
+    if (!verifyEvent(ev)) continue;
+    // Newest valid event decides; empty/malformed content = unlinked.
+    out.set(ev.pubkey, DID_RE.test(ev.content) ? ev.content : null);
+  }
+  for (const [pubkey, did] of out) if (!did) out.delete(pubkey);
+  return out;
+}
+
+// Newest signature-valid von-scoped display name (kind 30078, d =
+// profileDTag) per pubkey: pubkey → name. Same replaceable-event rule as
+// fetchLinkClaims; empty content = name unset.
+async function fetchVonNames(relays, pubkeys, profileDTag, timeoutMs = 4000) {
+  const out = new Map();
+  if (pubkeys.length === 0) return out;
+  const want = new Set(pubkeys);
+  const evs = (await relayQuery(relays, { kinds: [30078], authors: pubkeys, '#d': [profileDTag], limit: pubkeys.length * 3 }, timeoutMs))
+    .filter((ev) => ev.kind === 30078 && want.has(ev.pubkey) &&
+      typeof ev.content === 'string' && Array.isArray(ev.tags) &&
+      ev.tags.some((t) => t[0] === 'd' && t[1] === profileDTag))
+    .sort((a, b) => b.created_at - a.created_at);
+  const verifyEvent = await verifyEventFn();
+  const decided = new Set();
+  for (const ev of evs) {
+    if (decided.has(ev.pubkey)) continue;
+    if (!verifyEvent(ev)) continue;
+    decided.add(ev.pubkey);
+    const name = ev.content.trim();
+    if (name && name.length <= 64) out.set(ev.pubkey, name.slice(0, 40));
+  }
+  return out;
+}
+
+// PDS-side confirmation of a nostr link claim: the DID's own link record
+// must name the claimant's npub back.
+async function isMutualLink(pubkey, did, linkCollection) {
+  const pds = await resolvePds(did);
+  if (!pds) return false;
+  const rec = await getPdsRecord(pds, did, linkCollection);
+  const npub = rec && rec.value ? rec.value.nostr : null;
+  return typeof npub === 'string' && npubToHex(npub) === pubkey;
+}
+
+// Verified receipts → sponsor rows. Zaps whose embedded request signature
+// verifies become candidate named rows, summed per zapper. Names follow
+// the site's identity convention: a zapper whose nostr key is mutually
+// linked to an atproto account shows the atproto identity (displayName,
+// else handle) with `did` set so callers can link the bsky profile;
+// otherwise the kind-0 profile name. Everything else — throwaway anonymous
+// keys, unverifiable requests, keys with neither profile nor link — pools
+// into one anonymous bucket.
+async function aggregateSponsors(relays, verifiedReceipts, { linkCollection = null, timeoutMs = 4000 } = {}) {
+  const byZapper = new Map();
+  let anonMsat = 0, anonCount = 0;
+  for (const { event, msat } of verifiedReceipts) {
+    const zapper = await zapperOf(event);
+    if (zapper) {
+      const cur = byZapper.get(zapper) || { msat: 0, count: 0 };
+      cur.msat += msat;
+      cur.count += 1;
+      byZapper.set(zapper, cur);
+    } else {
+      anonMsat += msat;
+      anonCount += 1;
+    }
+  }
+  const pubkeys = [...byZapper.keys()];
+  const [profiles, claims] = await Promise.all([
+    fetchProfiles(relays, pubkeys, timeoutMs),
+    linkCollection ? fetchLinkClaims(relays, pubkeys, linkCollection, timeoutMs) : new Map(),
+  ]);
+  const atproto = new Map();
+  await Promise.all([...claims].map(async ([pubkey, did]) => {
+    if (!(await isMutualLink(pubkey, did, linkCollection))) return;
+    const name = await atprotoNameOf(did);
+    if (name) atproto.set(pubkey, { name, did });
+  }));
+  const named = [];
+  for (const [pubkey, { msat, count }] of byZapper) {
+    const at = atproto.get(pubkey);
+    const name = at ? at.name : profileNameOf(profiles.get(pubkey));
+    if (name) named.push({ pubkey, name, did: at ? at.did : null, msat, count });
+    else { anonMsat += msat; anonCount += count; }
+  }
+  named.sort((a, b) => b.msat - a.msat);
+  return { named, anonMsat, anonCount };
+}
+
+// Resolve with the first *verified* receipt that arrives from `since` on
+// (skipping ids in `seen`), or null after timeoutMs. Watches `#e` for nostr
+// documents, `#p` (narrowed by atUri) for atproto documents.
+function awaitZapReceipt(relays, { eventId = null, pubkey = null, atUri = null, nostrPubkey = null, since, seen, timeoutMs = 120000 } = {}) {
+  const filter = { kinds: [9735] };
+  if (eventId) filter['#e'] = [eventId];
+  else if (pubkey) filter['#p'] = [pubkey];
+  else return Promise.resolve(null);
+  if (typeof since === 'number') filter.since = since;
+  const check = (ev) => verifyZapReceipts([ev], { nostrPubkey, eventId, atUri });
+  return relayAwait(relays, filter, async (ev) => {
+    if (!ev || (seen && seen.has(ev.id))) return false;
+    return (await check(ev)).length === 1;
+  }, timeoutMs).then(async (ev) => ev ? (await check(ev))[0] : null);
+}
+
+// Atproto author → hex pubkey of their *mutually verified* linked nostr
+// account: the author's PDS link record and the nostr-side link event must
+// point at each other, the same rule the site itself uses to treat the pair
+// as one person. Null when absent or one-way.
+async function resolveLinkedZapPubkey(did, { relays, linkCollection }) {
+  const pds = await resolvePds(did);
+  if (!pds) return null;
+  const link = await getPdsRecord(pds, did, linkCollection);
+  const npub = link && link.value ? link.value.nostr : null;
+  const hex = typeof npub === 'string' ? npubToHex(npub) : null;
+  if (!hex) return null;
+  return (await verifyMutualLink(relays, hex, did, linkCollection)) ? hex : null;
+}
+
+// The nostr half of the link: a kind-30078 event with d = linkDTag whose
+// content names the DID. The newest signature-valid event decides (empty
+// content = unlinked).
+async function verifyMutualLink(relays, pubkey, did, linkDTag, timeoutMs = 4000) {
+  const evs = (await relayQuery(relays, { kinds: [30078], authors: [pubkey], '#d': [linkDTag], limit: 1 }, timeoutMs))
+    .filter((ev) => ev.kind === 30078 && ev.pubkey === pubkey && typeof ev.content === 'string')
+    .sort((a, b) => b.created_at - a.created_at);
+  if (evs.length === 0) return false;
+  const verifyEvent = await verifyEventFn();
+  for (const ev of evs) if (verifyEvent(ev)) return ev.content === did;
+  return false;
+}
+
+window.vonLn = {
+  npubToHex,
+  hexToNpub,
+  noteEncode,
+  relayQuery,
+  relayAwait,
+  verifyEventFn,
+  isLightningAddress,
+  fetchKind0,
+  lud16FromKind0,
+  resolvePds,
+  getPdsRecord,
+  getPdsRecordRkey,
+  listPdsRecords,
+  resolveTipAddress,
+  payParams,
+  requestInvoice,
+  fetchBtcUsd,
+  bolt11AmountMsat,
+  makeZapRequest,
+  fetchZapReceipts,
+  verifyZapReceipts,
+  awaitZapReceipt,
+  resolveLinkedZapPubkey,
+  verifyMutualLink,
+  zapperOf,
+  fetchProfiles,
+  profileNameOf,
+  profilePictureOf,
+  aggregateSponsors,
+  atprotoNameOf,
+  fetchLinkClaims,
+  fetchVonNames,
+  isMutualLink,
+  resolveDidDoc,
+};
+</script>

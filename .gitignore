@@ -1,0 +1,10 @@
+node_modules/
+.wrangler/
+dist/
+.dev.vars
+.dev.vars.*
+!.dev.vars.example
+.env*
+src/templates.gen.mjs
+data/*.txt
+data/custom/*.html

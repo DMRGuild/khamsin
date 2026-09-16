@@ -1,0 +1,5 @@
+<nav class="back-nav">
+  <a href="/">&larr; All Documents</a>
+</nav>
+
+<div class="about-page"><%~ it.aboutHtml %></div>

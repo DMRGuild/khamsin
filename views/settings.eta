@@ -1,0 +1,294 @@
+<% /* Account settings — nostr-only on this deployment. Everything happens in
+      the browser: the link status is computed from public relay/PDS data,
+      and the link / display-name events (kind 30078, NIP-78) are signed via
+      NIP-07 and published straight to the relays. The server renders only
+      this shell (route sits behind requireAuth).
+
+      Linking is protocol-native: a nostr account signs a kind-30078 event
+      naming a DID; the pair counts as one person only when that DID's PDS
+      link record names the npub back (writing that half needs the parent
+      deployment or any atproto-side tool).
+
+      Styled with the skin's own CSS variables so it fits every skin (no
+      hardcoded skin). */ %>
+<nav class="back-nav">
+  <a href="/">&larr; All Documents</a>
+</nav>
+
+<style>
+  .settings-section { margin-bottom: 1.75rem; }
+  .settings-section h3 {
+    margin-bottom: 0.5rem;
+    padding-bottom: 0.35rem;
+    border-bottom: 1px solid var(--border);
+  }
+  .settings-id {
+    font-family: var(--mono);
+    word-break: break-all;
+    /* Mono renders large next to body text; emphasis comes from weight. */
+    font-size: 0.85rem;
+    font-weight: 600;
+  }
+  .settings-status { margin: 0.5rem 0; }
+  .settings-actions { display: flex; gap: 0.5rem; align-items: center; }
+</style>
+
+<article class="record-detail settings">
+  <h2>Account Settings</h2>
+
+  <section class="settings-section">
+    <h3>Account</h3>
+    <dl>
+      <dt>Network</dt>
+      <dd>Nostr</dd>
+      <dt>Identity</dt>
+      <dd class="settings-id" title="<%= it.authedSession.npub %>"><%= it.authedSession.npub.slice(0, 12) %>&hellip;<%= it.authedSession.npub.slice(-6) %></dd>
+    </dl>
+  </section>
+
+  <section class="settings-section">
+    <h3>Linked account</h3>
+    <p class="muted">
+      Link an AT Protocol account you also control. The link becomes active
+      only when both accounts point at each other; records from a linked pair
+      are shown under the AT Protocol display name.
+    </p>
+    <p class="settings-status muted" id="link-state">Checking link status&hellip;</p>
+    <form id="nostr-link-form" hidden>
+      <label for="link-handle">AT Protocol handle or DID</label>
+      <input type="text" id="link-handle" name="handle" placeholder="alice.bsky.social or did:plc:&hellip;"
+             autocapitalize="off" autocorrect="off" spellcheck="false" required />
+      <button type="submit" id="nostr-link-submit">Sign &amp; save link</button>
+    </form>
+    <div class="settings-actions" id="nostr-unlink-actions" hidden>
+      <button type="button" class="btn-danger btn-small" id="nostr-unlink">Remove link</button>
+    </div>
+    <p class="muted" id="link-status"></p>
+  </section>
+
+  <section class="settings-section">
+    <h3>Lightning address</h3>
+    <p class="muted">Tips on your documents use the Lightning address
+      (<code>lud16</code>) from your public nostr profile. Set it in your
+      nostr client or wallet; nothing is stored on this site.</p>
+    <p class="muted" id="ln-status">checking&hellip;</p>
+  </section>
+
+  <section class="settings-section">
+    <h3>Display name</h3>
+    <p class="settings-status muted" id="name-state">Checking&hellip;</p>
+    <form id="nostr-name-form" hidden>
+      <label for="display-name">Name shown on this site</label>
+      <input type="text" id="display-name" name="name" maxlength="64" required />
+      <button type="submit" id="nostr-name-submit">Sign &amp; save name</button>
+    </form>
+    <div class="settings-actions" id="nostr-name-actions" hidden>
+      <button type="button" class="btn-danger btn-small" id="nostr-name-clear">Clear name</button>
+    </div>
+    <p class="muted" id="name-status"></p>
+    <p class="muted">The name is published as a signed nostr event scoped to
+      this site; it never touches your kind-0 profile.</p>
+  </section>
+</article>
+
+<%/* window.vonLn comes from partials/lightning-core, included once by the
+     layout before the body. */%>
+<script type="module">
+const SESSION = <%~ JSON.stringify({
+  npub: it.authedSession.npub || null,
+  pubkey: it.authedSession.pubkey || null,
+}) %>;
+const LINK_DTAG = window.VON.linkCollection;
+const PROFILE_DTAG = window.VON.profileDTag;
+const RELAYS = window.VON.relays || [];
+const ln = window.vonLn;
+
+const $ = (id) => document.getElementById(id);
+const setLinkStatus = (t) => { $('link-status').textContent = t; };
+const setNameStatus = (t) => { $('name-status').textContent = t; };
+
+// ── NIP-07 helpers (same trust model as the upload flow: the server never
+// holds nostr keys; the extension signs, the browser broadcasts) ──
+function requireNip07() {
+  if (!window.nostr || !window.nostr.signEvent) {
+    throw new Error('No NIP-07 nostr extension found (e.g. Alby, nos2x).');
+  }
+  return window.nostr;
+}
+
+async function signAppDataEvent(dTag, content) {
+  const ev = await requireNip07().signEvent({
+    kind: 30078,
+    created_at: Math.floor(Date.now() / 1000),
+    content,
+    tags: [['d', dTag]],
+  });
+  if (SESSION.pubkey && ev.pubkey !== SESSION.pubkey) {
+    throw new Error('The extension signed with a different key than your login.');
+  }
+  return ev;
+}
+
+// Defined by the authbar's (later-executing) module; only ever called from
+// user-triggered handlers, long after every module has run.
+function publishToRelays(ev) {
+  if (typeof window.__vonPublishToRelays !== 'function') {
+    throw new Error('publisher not ready — reload the page');
+  }
+  return window.__vonPublishToRelays(ev);
+}
+
+// ── Link status (all public data, computed client-side) ──
+async function refreshLinkState() {
+  const stateEl = $('link-state');
+  try {
+    const claims = await ln.fetchLinkClaims(RELAYS, [SESSION.pubkey], LINK_DTAG);
+    const did = claims.get(SESSION.pubkey) || null;
+    if (!did) {
+      stateEl.textContent = 'No link published.';
+      $('nostr-link-form').hidden = false;
+      $('nostr-unlink-actions').hidden = true;
+      return;
+    }
+    const mutual = await ln.isMutualLink(SESSION.pubkey, did, LINK_DTAG);
+    const name = mutual ? await ln.atprotoNameOf(did) : null;
+    // Untrusted PDS/relay strings — textContent only.
+    stateEl.textContent = mutual
+      ? `Linked to ${name ? name + ' ' : ''}(${did}), verified both ways.`
+      : `You point at ${did}, but that AT Protocol account does not point back yet. ` +
+        'Publish a matching link record from that account to complete the link.';
+    $('nostr-link-form').hidden = mutual;
+    $('nostr-unlink-actions').hidden = false;
+  } catch {
+    stateEl.textContent =
+      'Could not check the link status right now; the relays or the PDS may be unreachable.';
+  }
+}
+
+$('nostr-link-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const btn = $('nostr-link-submit');
+  btn.disabled = true;
+  try {
+    requireNip07();
+    let did = $('link-handle').value.trim();
+    if (!did.startsWith('did:')) {
+      setLinkStatus('resolving handle...');
+      const u = new URL('https://public.api.bsky.app/xrpc/com.atproto.identity.resolveHandle');
+      u.searchParams.set('handle', did);
+      const data = await (await fetch(u)).json().catch(() => ({}));
+      if (typeof data.did !== 'string' || !data.did.startsWith('did:')) {
+        throw new Error('could not resolve handle');
+      }
+      did = data.did;
+    }
+    setLinkStatus('sign the link event in your extension...');
+    const ev = await signAppDataEvent(LINK_DTAG, did);
+    setLinkStatus('publishing to relays...');
+    await publishToRelays(ev);
+    setLinkStatus('published.');
+    refreshLinkState();
+  } catch (err) {
+    setLinkStatus(`error: ${err && err.message ? err.message : err}`);
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+$('nostr-unlink').addEventListener('click', async (e) => {
+  if (!confirm('Remove the account link?')) return;
+  e.target.disabled = true;
+  try {
+    setLinkStatus('sign the unlink event in your extension...');
+    const ev = await signAppDataEvent(LINK_DTAG, '');
+    setLinkStatus('publishing to relays...');
+    await publishToRelays(ev);
+    setLinkStatus('unlinked.');
+    refreshLinkState();
+  } catch (err) {
+    setLinkStatus(`error: ${err && err.message ? err.message : err}`);
+  } finally {
+    e.target.disabled = false;
+  }
+});
+
+// ── Display name (kind 30078, von-scoped) ──
+async function refreshNameState() {
+  const stateEl = $('name-state');
+  try {
+    const [vonNames, profiles] = await Promise.all([
+      ln.fetchVonNames(RELAYS, [SESSION.pubkey], PROFILE_DTAG),
+      ln.fetchProfiles(RELAYS, [SESSION.pubkey]),
+    ]);
+    const vonName = vonNames.get(SESSION.pubkey) || null;
+    const kind0Name = ln.profileNameOf(profiles.get(SESSION.pubkey));
+    if (vonName) {
+      stateEl.textContent = `Current name on this site: ${vonName}`;
+      $('display-name').value = vonName;
+      $('nostr-name-actions').hidden = false;
+    } else if (kind0Name) {
+      stateEl.textContent =
+        `Your nostr profile name “${kind0Name}” is currently shown. ` +
+        'Setting a name here overrides it on this site only.';
+      $('nostr-name-actions').hidden = true;
+    } else {
+      stateEl.textContent = 'No name set; your records show your truncated npub.';
+      $('nostr-name-actions').hidden = true;
+    }
+    $('nostr-name-form').hidden = false;
+  } catch {
+    stateEl.textContent = 'Could not check the current name right now.';
+    $('nostr-name-form').hidden = false;
+  }
+}
+
+$('nostr-name-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const btn = $('nostr-name-submit');
+  btn.disabled = true;
+  try {
+    const name = $('display-name').value.trim();
+    if (!name) throw new Error('enter a name (or use Clear name)');
+    setNameStatus('sign the name event in your extension...');
+    const ev = await signAppDataEvent(PROFILE_DTAG, name);
+    setNameStatus('publishing to relays...');
+    await publishToRelays(ev);
+    setNameStatus('saved.');
+    refreshNameState();
+  } catch (err) {
+    setNameStatus(`error: ${err && err.message ? err.message : err}`);
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+$('nostr-name-clear').addEventListener('click', async (e) => {
+  if (!confirm('Clear your display name on this site?')) return;
+  e.target.disabled = true;
+  try {
+    setNameStatus('sign the event in your extension...');
+    const ev = await signAppDataEvent(PROFILE_DTAG, '');
+    setNameStatus('publishing to relays...');
+    await publishToRelays(ev);
+    setNameStatus('cleared.');
+    $('display-name').value = '';
+    refreshNameState();
+  } catch (err) {
+    setNameStatus(`error: ${err && err.message ? err.message : err}`);
+  } finally {
+    e.target.disabled = false;
+  }
+});
+
+// ── Lightning address (informational — lud16 lives in the kind-0 profile) ──
+(async () => {
+  const ev = await ln.fetchKind0(RELAYS, SESSION.pubkey);
+  const addr = ln.lud16FromKind0(ev);
+  $('ln-status').textContent = addr
+    ? `current profile address: ${addr}`
+    : 'no lud16 found in your profile';
+})();
+
+refreshLinkState();
+refreshNameState();
+</script>

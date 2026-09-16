@@ -1,0 +1,16 @@
+<%/* NOT RENDERED SERVER-SIDE on this deployment. This file is kept as the
+     DOM CONTRACT for the client-side row renderer in
+     public/static/js/records.js — blackboard's sidebar subgrid (author |
+     title | year columns) depends on exactly this structure, including an
+     EMPTY span.record-author when the author cell is suppressed for grouped
+     rows. Keep records.js in sync with any change here. */%>
+<article class="record">
+  <span class="record-author"><% if (!it.hideAuthor) { %><a href="<%= it.record.authorUrl %>" target="_blank" rel="noopener noreferrer" title="<%= it.record.handle %>"><%= it.record.authorName || it.record.handle %></a><% } %></span>
+  <h3 class="record-heading"><a class="record-title-link" href="/record/<%= it.record.did %>/<%= it.record.rkey %>"<% if (it.currentDid && it.currentRkey && it.record.did === it.currentDid && it.record.rkey === it.currentRkey) { %> aria-current="page"<% } %>><%= it.record.value.title || "(untitled)" %></a></h3>
+  <time class="record-date" datetime="<%= it.record.value.createdAt || "" %>"><%= (String(it.record.value.createdAt || "").match(/\d{4}/) || ["—"])[0] %></time>
+  <%/* data-cid (when the record has one) lets the delete flow also drop the
+       Pinata pin via POST /unpin. */%>
+  <% if (it.ownerDid && it.record.did === it.ownerDid && it.record.did.startsWith("npub1")) { %>
+    <span class="inline-form record-delete"><button type="button" class="btn-danger nostr-delete" data-event-id="<%= it.record.rkey %>"<% if (it.record.value.cid) { %> data-cid="<%= it.record.value.cid %>"<% } %>>Delete</button></span>
+  <% } %>
+</article>

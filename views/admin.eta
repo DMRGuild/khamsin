@@ -1,0 +1,333 @@
+<% /* Web admin: allowed-tags and allowlist editing (KV-backed). Rendered
+      only for admins (the route 404s everyone else). Admins themselves live
+      in the `admins` KV key, editable only via the wrangler CLI.
+
+      Workers-port note: the server hands over plain entry strings; the
+      display name / avatar decoration is fetched client-side (relays +
+      PDSes) so the Worker does no network lookups.
+
+      Styled with the skin's own CSS variables so it fits every skin (no
+      hardcoded skin). */ %>
+<nav class="back-nav">
+  <a href="/">&larr; All Documents</a>
+</nav>
+
+<style>
+  .admin-section { margin-bottom: 1.75rem; }
+  .admin-section h3 {
+    margin-bottom: 0.5rem;
+    padding-bottom: 0.35rem;
+    border-bottom: 1px solid var(--border);
+  }
+  .admin-list { list-style: none; padding: 0; margin: 0.5rem 0; }
+  .admin-list li {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 0.5rem;
+    align-items: center;
+    padding: 0.3rem 0;
+    border-bottom: 1px solid var(--border);
+  }
+  .admin-list li.admin-user-row {
+    grid-template-columns: auto minmax(0, 1.4fr) minmax(0, 1fr) auto;
+  }
+  .admin-avatar {
+    width: 1.6rem;
+    height: 1.6rem;
+    border-radius: 50%;
+    object-fit: cover;
+    background: var(--border);
+    flex-shrink: 0;
+  }
+  a.admin-entry { color: var(--accent); }
+  .admin-entry {
+    font-family: var(--mono);
+    word-break: break-all;
+    /* Mono renders large next to body text; emphasis comes from weight. */
+    font-size: 0.85rem;
+    font-weight: 600;
+  }
+  .admin-name { word-break: break-word; }
+  .admin-add-form { display: flex; gap: 0.5rem; margin-top: 0.6rem; }
+  .admin-add-form input { flex: 1; min-width: 0; }
+  .admin-status { margin: 0.5rem 0; min-height: 1.2em; }
+</style>
+
+<article class="record-detail admin">
+  <h2>Administration</h2>
+
+  <section class="admin-section">
+    <h3>Allowed tags</h3>
+    <p class="muted">
+      Records must carry at least one of these tags to be listed. An empty
+      list allows everything (tagged or not). The instance's own base-domain
+      tag <span class="admin-entry"><%= it.baseTag %></span> is always
+      implicitly allowed and cannot be removed.
+    </p>
+    <% if (it.forceAllowTagless) { %>
+    <p class="muted">
+      FORCE_ALLOW_TAGLESS is enabled: untagged records stay visible even
+      while this list is non-empty, so these tags mainly serve as the upload
+      form's choices. Records whose tags are all unlisted are still hidden.
+    </p>
+    <% } else { %>
+    <p class="muted">
+      Careful: once this list has any entry, records without an allowed tag
+      (including every pre-tag upload) disappear from the site.
+    </p>
+    <% } %>
+    <ul class="admin-list" id="tag-list">
+      <% for (const tag of (it.allowedTags || [])) { %>
+      <li>
+        <span class="admin-entry"><%= tag %></span>
+        <button type="button" class="btn-danger btn-small" data-remove-tag="<%= tag %>">Remove</button>
+      </li>
+      <% } %>
+    </ul>
+    <form class="admin-add-form" id="tag-add-form">
+      <input type="text" id="tag-add-input" placeholder="sci.physics or example.org"
+             autocapitalize="off" autocorrect="off" spellcheck="false" required />
+      <button type="submit">Add tag</button>
+    </form>
+    <p class="admin-status muted" id="tag-status"></p>
+  </section>
+
+  <section class="admin-section">
+    <h3>Allowed users</h3>
+    <p class="muted">
+      Who may log in and publish here: AT Protocol handles or DIDs, and nostr
+      npubs. Removing an entry hides that user's records from this instance.
+      Changes propagate to all edges within about a minute.
+    </p>
+    <ul class="admin-list" id="user-list"></ul>
+    <form class="admin-add-form" id="user-add-form">
+      <input type="text" id="user-add-input" placeholder="alice.bsky.social, did:plc:&hellip; or npub1&hellip;"
+             autocapitalize="off" autocorrect="off" spellcheck="false" required />
+      <button type="submit">Add user</button>
+    </form>
+    <p class="admin-status muted" id="user-status"></p>
+  </section>
+
+  <section class="admin-section">
+    <h3>Admins</h3>
+    <p class="muted">
+      Admins are configured in the <span class="admin-entry">admins</span> KV
+      key (wrangler CLI only) and cannot be edited from the web.
+    </p>
+  </section>
+</article>
+
+<script type="module">
+const SELF_ENTRIES = <%~ JSON.stringify(it.selfEntries || []) %>;
+const INITIAL_ENTRIES = <%~ JSON.stringify(it.allowlistEntries || []).replace(/</g, "\\u003c") %>;
+const RELAYS = window.VON.relays || [];
+const ln = window.vonLn;
+
+const tagList = document.getElementById('tag-list');
+const userList = document.getElementById('user-list');
+const tagStatus = document.getElementById('tag-status');
+const userStatus = document.getElementById('user-status');
+
+async function postJson(url, payload) {
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || !data.ok) throw new Error(data.error || `request failed (${res.status})`);
+  return data;
+}
+
+// Rows are rebuilt from the server's refreshed lists after every action;
+// everything is inserted via textContent so relay/PDS-derived names stay text.
+function makeButton(label, dataAttr, value) {
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'btn-danger btn-small';
+  btn.dataset[dataAttr] = value;
+  btn.textContent = label;
+  return btn;
+}
+
+function renderTags(tags) {
+  tagList.textContent = '';
+  for (const tag of tags) {
+    const li = document.createElement('li');
+    const span = document.createElement('span');
+    span.className = 'admin-entry';
+    span.textContent = tag;
+    li.append(span, makeButton('Remove', 'removeTag', tag));
+    tagList.append(li);
+  }
+}
+
+const HEX64_RE = /^[0-9a-f]{64}$/;
+const shorten = (s) => s.length > 24 ? `${s.slice(0, 12)}…${s.slice(-6)}` : s;
+
+// Builds the row skeleton immediately (entry + external link), then
+// decorates names/avatars asynchronously from the relays/PDSes. Lookup
+// failures degrade to blanks so a down relay can't take the page with it.
+function renderUsers(entries) {
+  userList.textContent = '';
+  const rows = new Map(); // entry → { nameEl, avatarSlot: li }
+  for (const entry of entries) {
+    const li = document.createElement('li');
+    li.className = 'admin-user-row';
+    const avatar = document.createElement('span');
+    avatar.className = 'admin-avatar';
+    const isNostr = entry.startsWith('npub1') || HEX64_RE.test(entry);
+    const npub = entry.startsWith('npub1')
+      ? entry
+      : (HEX64_RE.test(entry) ? ln.hexToNpub(entry) : null);
+    const url = isNostr
+      ? (npub ? `https://njump.me/${npub}` : null)
+      : `https://bsky.app/profile/${encodeURIComponent(entry)}`;
+    let entryEl;
+    if (url) {
+      entryEl = document.createElement('a');
+      entryEl.href = url;
+      entryEl.target = '_blank';
+      entryEl.rel = 'noopener noreferrer';
+    } else {
+      entryEl = document.createElement('span');
+    }
+    entryEl.className = 'admin-entry';
+    entryEl.title = entry;
+    entryEl.textContent = shorten(npub || entry);
+    const name = document.createElement('span');
+    name.className = 'admin-name muted';
+    li.append(avatar, entryEl, name, makeButton('Remove', 'removeEntry', entry));
+    userList.append(li);
+    rows.set(entry, { li, nameEl: name });
+  }
+  decorateUsers(entries, rows);
+}
+
+async function decorateUsers(entries, rows) {
+  // nostr entries: one batched pass for von names, kind-0 names + pictures.
+  const pubkeyByEntry = new Map();
+  for (const entry of entries) {
+    const hex = entry.startsWith('npub1') ? ln.npubToHex(entry)
+      : HEX64_RE.test(entry) ? entry : null;
+    if (hex) pubkeyByEntry.set(entry, hex);
+  }
+  const pubkeys = [...new Set(pubkeyByEntry.values())];
+  try {
+    const [vonNames, profiles] = pubkeys.length > 0
+      ? await Promise.all([
+          ln.fetchVonNames(RELAYS, pubkeys, window.VON.profileDTag),
+          ln.fetchProfiles(RELAYS, pubkeys),
+        ])
+      : [new Map(), new Map()];
+    for (const [entry, hex] of pubkeyByEntry) {
+      const row = rows.get(entry);
+      if (!row) continue;
+      const prof = profiles.get(hex);
+      row.nameEl.textContent = vonNames.get(hex) || ln.profileNameOf(prof) || '';
+      const pic = ln.profilePictureOf(prof);
+      if (pic) setAvatar(row, pic);
+    }
+  } catch { /* names stay blank */ }
+
+  // atproto entries: resolve handle → DID, then profile name + avatar.
+  await Promise.all(entries.filter((e) => !pubkeyByEntry.has(e)).map(async (entry) => {
+    const row = rows.get(entry);
+    if (!row) return;
+    try {
+      let did = entry;
+      if (!entry.startsWith('did:')) {
+        const u = new URL('https://public.api.bsky.app/xrpc/com.atproto.identity.resolveHandle');
+        u.searchParams.set('handle', entry);
+        const data = await (await fetch(u)).json().catch(() => ({}));
+        if (typeof data.did !== 'string' || !data.did.startsWith('did:')) return;
+        did = data.did;
+      }
+      const name = await ln.atprotoNameOf(did);
+      // The fallback chain ends at handle/DID — not display names, so show
+      // blank instead of repeating the entry column.
+      if (name && name !== entry && name !== did) row.nameEl.textContent = name;
+      const pds = await ln.resolvePds(did);
+      const prof = pds && await ln.getPdsRecord(pds, did, 'app.bsky.actor.profile');
+      const link = prof && prof.value && prof.value.avatar && prof.value.avatar.ref
+        ? prof.value.avatar.ref['$link']
+        : null;
+      if (typeof link === 'string' && /^(Qm[1-9A-HJ-NP-Za-km-z]{44}|baf[a-z2-7]{20,})$/.test(link)) {
+        setAvatar(row, `https://cdn.bsky.app/img/avatar/plain/${did}/${link}@jpeg`);
+      }
+    } catch { /* blanks */ }
+  }));
+}
+
+function setAvatar(row, src) {
+  const img = document.createElement('img');
+  img.className = 'admin-avatar';
+  img.alt = '';
+  img.loading = 'lazy';
+  img.addEventListener('error', () => img.removeAttribute('src'));
+  img.src = src;
+  row.li.querySelector('.admin-avatar').replaceWith(img);
+}
+
+document.getElementById('tag-add-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const input = document.getElementById('tag-add-input');
+  tagStatus.textContent = 'saving...';
+  try {
+    const data = await postJson('/admin/tags/add', { tag: input.value.trim() });
+    renderTags(data.tags);
+    tagStatus.textContent = data.note || 'saved.';
+    input.value = '';
+  } catch (err) {
+    tagStatus.textContent = err.message;
+  }
+});
+
+tagList.addEventListener('click', async (e) => {
+  const tag = e.target.dataset && e.target.dataset.removeTag;
+  if (!tag) return;
+  if (!confirm(`Remove tag "${tag}"? Records left without an allowed tag disappear from this instance.`)) return;
+  tagStatus.textContent = 'removing...';
+  try {
+    const data = await postJson('/admin/tags/remove', { tag });
+    renderTags(data.tags);
+    tagStatus.textContent = data.note || 'removed.';
+  } catch (err) {
+    tagStatus.textContent = err.message;
+  }
+});
+
+document.getElementById('user-add-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const input = document.getElementById('user-add-input');
+  userStatus.textContent = 'saving...';
+  try {
+    const data = await postJson('/admin/allowlist/add', { entry: input.value.trim() });
+    renderUsers(data.entries);
+    userStatus.textContent = 'saved.';
+    input.value = '';
+  } catch (err) {
+    userStatus.textContent = err.message;
+  }
+});
+
+userList.addEventListener('click', async (e) => {
+  const entry = e.target.dataset && e.target.dataset.removeEntry;
+  if (!entry) return;
+  const self = SELF_ENTRIES.includes(entry);
+  const warning = self
+    ? `"${entry}" is YOUR OWN entry. Removing it locks this account out after logout. Remove anyway?`
+    : `Remove "${entry}" from the allowlist? Their records disappear from this instance.`;
+  if (!confirm(warning)) return;
+  userStatus.textContent = 'removing...';
+  try {
+    const data = await postJson('/admin/allowlist/remove', { entry });
+    renderUsers(data.entries);
+    userStatus.textContent = 'removed.';
+  } catch (err) {
+    userStatus.textContent = err.message;
+  }
+});
+
+renderUsers(INITIAL_ENTRIES);
+</script>

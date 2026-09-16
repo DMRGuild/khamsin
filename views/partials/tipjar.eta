@@ -1,0 +1,411 @@
+<% /* Tip button for the record detail page (rendered inside the <dl>).
+
+      The author's Lightning address is resolved entirely in the tipper's
+      browser — nostr kind-0 lud16 (signature-verified), or a lightning.*
+      record on the author's PDS with a fallback to their linked nostr
+      profile — and the LNURL-pay flow runs against the author's own
+      provider. The row stays hidden until an address is found.
+
+      Workers-port note: the record itself is client-fetched, so this module
+      awaits window.__vonRecord instead of reading eta interpolations.
+
+      Styled with the skin's own CSS variables so it fits every skin (no
+      hardcoded skin); only the QR keeps a white quiet zone, which
+      scannability requires regardless of skin. */ %>
+<%/* window.vonLn comes from partials/lightning-core, included once by the
+     layout before the body. */%>
+<dt id="tipjar-dt" hidden>Sponsor</dt>
+<dd id="tipjar" hidden>
+  <style>
+    .tipjar { font-family: var(--mono); font-size: 0.78rem; }
+    .tipjar-line { display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; }
+    .tipjar-form { display: inline-flex; align-items: center; gap: 0.4rem; }
+    .tipjar-form input {
+      width: 6.5rem;
+      font-family: var(--mono);
+      font-size: 0.75rem;
+      padding: 0.2rem 0.4rem;
+      background: transparent;
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 3px;
+    }
+    <%/* Descendant selectors on purpose: the layout's base
+         `button[type="submit"]` rule paints an accent-filled button, and a
+         lone class selector loses to it. */%>
+    .tipjar .tipjar-btn {
+      font-family: var(--mono);
+      font-size: 0.72rem;
+      letter-spacing: 0.02em;
+      padding: 0.2rem 0.6rem;
+      background: transparent;
+      color: var(--text-muted);
+      border: 1px solid var(--border);
+      border-radius: 3px;
+      cursor: pointer;
+      transition: color 0.12s, border-color 0.12s, background 0.12s;
+    }
+    .tipjar .tipjar-btn:hover { color: var(--text); border-color: var(--border-hi); }
+    .tipjar .tipjar-btn.copied { color: var(--accent); border-color: var(--accent); }
+    /* The main action: accent outline over the page background, no fill. */
+    .tipjar .tipjar-btn[type="submit"] {
+      background: transparent;
+      color: var(--accent);
+      border-color: var(--accent);
+      font-weight: 500;
+    }
+    .tipjar .tipjar-btn[type="submit"]:hover {
+      background: color-mix(in srgb, var(--accent) 15%, transparent);
+      color: var(--accent);
+    }
+    .tipjar-invoice {
+      margin-top: 0.6rem;
+      display: flex;
+      align-items: flex-start;
+      gap: 0.75rem;
+      flex-wrap: wrap;
+    }
+    /* `display: flex` above would defeat the hidden attribute otherwise. */
+    .tipjar-invoice[hidden] { display: none; }
+    .tipjar-qr {
+      background: #fff;
+      padding: 8px;
+      border-radius: 3px;
+      image-rendering: pixelated;
+      width: 148px;
+      height: 148px;
+    }
+    .tipjar-invoice-actions { display: flex; flex-direction: column; gap: 0.4rem; }
+    .tipjar-invoice-actions a {
+      color: var(--accent);
+      border-bottom: 1px solid var(--border-hi);
+      width: fit-content;
+    }
+    .tipjar-status { margin-top: 0.35rem; color: var(--text-muted); }
+    .tipjar-status.err { color: var(--red); }
+    .tipjar-sponsors { margin-bottom: 0.5rem; }
+    .tipjar-zaps { color: var(--accent); }
+    .tipjar-sponsor-list {
+      list-style: none;
+      margin: 0.3rem 0 0;
+      padding: 0;
+      font-size: 0.72rem;
+    }
+    .tipjar-sponsor-list li {
+      display: flex;
+      align-items: baseline;
+      gap: 0.6rem;
+    }
+    .tipjar-sponsor-list a {
+      color: var(--text);
+      border-bottom: 1px solid var(--border-hi);
+      overflow-wrap: anywhere;
+    }
+    .tipjar-sponsor-list .sats { color: var(--text-muted); white-space: nowrap; }
+    .tipjar-sponsor-list .anon { color: var(--text-muted); }
+    .tipjar-usd { color: var(--text-muted); white-space: nowrap; }
+  </style>
+  <div class="tipjar">
+    <div class="tipjar-sponsors" id="tipjar-sponsors" hidden>
+      <div class="tipjar-zaps" id="tipjar-zaps"></div>
+      <ul class="tipjar-sponsor-list" id="tipjar-sponsor-list"></ul>
+    </div>
+    <div class="tipjar-line">
+      <form class="tipjar-form" id="tipjar-form">
+        <input type="number" id="tipjar-amount" min="1" step="1" value="10000"
+               aria-label="amount in sats" required /> sats
+        <span class="tipjar-usd" id="tipjar-usd"></span>
+        <button type="submit" class="tipjar-btn" id="tipjar-go">&#9889; Zap</button>
+      </form>
+    </div>
+    <div class="tipjar-invoice" id="tipjar-invoice" hidden>
+      <canvas class="tipjar-qr" id="tipjar-qr" width="1" height="1"></canvas>
+      <div class="tipjar-invoice-actions">
+        <a id="tipjar-open" href="#" rel="noopener noreferrer">open in wallet</a>
+        <button type="button" class="tipjar-btn" id="tipjar-copy">copy invoice</button>
+      </div>
+    </div>
+    <p class="tipjar-status" id="tipjar-status" hidden></p>
+  </div>
+  <script type="module">
+    const RELAYS = window.VON.relays || [];
+    const COLLECTIONS = { lightning: window.VON.lightningCollection, link: window.VON.linkCollection };
+
+    <%/* The record is client-fetched; no record (404) leaves the row hidden.
+         `event` is the nostr event id (= rkey) for nostr-backed records —
+         the thing a NIP-57 zap receipt references directly. Atproto records
+         get `atUri` instead: zaps on them target the author's mutually
+         linked nostr key, with the AT-URI riding in the zap request for
+         per-document attribution. */%>
+    const record = await window.__vonRecord;
+    if (record) {
+    const AUTHOR = {
+      author: record.did,
+      group: record.groupDid || null,
+      event: record.did.startsWith('npub1') && /^[0-9a-f]{64}$/.test(String(record.rkey))
+        ? record.rkey
+        : null,
+      atUri: record.did.startsWith('did:')
+        ? `at://${record.did}/${window.VON.collection}/${record.rkey}`
+        : null,
+    };
+
+    const ln = window.vonLn;
+    const $ = (id) => document.getElementById(id);
+    const status = (t, err) => {
+      const el = $('tipjar-status');
+      el.hidden = !t;
+      el.textContent = t || '';
+      el.classList.toggle('err', !!err);
+    };
+
+    const addr = await ln.resolveTipAddress({
+      author: AUTHOR.author,
+      group: AUTHOR.group,
+      relays: RELAYS,
+      lightningCollection: COLLECTIONS.lightning,
+      linkCollection: COLLECTIONS.link,
+    });
+
+    if (addr) {
+      $('tipjar-dt').hidden = false;
+      $('tipjar').hidden = false;
+
+      // Live USD hint next to the amount field. Display-only: the payment
+      // itself is always denominated in sats. Silently absent when no rate
+      // source answers.
+      ln.fetchBtcUsd().then((rate) => {
+        if (!rate) return;
+        const amountEl = $('tipjar-amount');
+        const usdEl = $('tipjar-usd');
+        <%/* fmtUsd is declared below; this callback only runs after the
+             rate fetch resolves, well past module initialization. */%>
+        const renderUsd = () => {
+          const sats = Number(amountEl.value);
+          if (!Number.isFinite(sats) || sats <= 0) { usdEl.textContent = ''; return; }
+          usdEl.textContent = `≈ ${fmtUsd(sats * 1000, rate)}`;
+        };
+        amountEl.addEventListener('input', renderUsd);
+        renderUsd();
+      });
+
+      let params = null;
+      const seenReceipts = new Set();
+      let zapTotal = null;
+      let sponsorReceipts = [];
+      const fmtSats = (msat) => Math.floor(msat / 1000).toLocaleString('en-US');
+      const fmtUsd = (msat, rate) => {
+        const usd = (msat / 1000 / 1e8) * rate;
+        return `$${usd.toLocaleString('en-US', {
+          minimumFractionDigits: 2,
+          maximumFractionDigits: usd < 0.01 ? 4 : 2,
+        })}`;
+      };
+      const renderZaps = () => {
+        if (!zapTotal || zapTotal.count === 0) { $('tipjar-sponsors').hidden = true; return; }
+        $('tipjar-zaps').textContent =
+          `✦ ${fmtSats(zapTotal.msat)} sats zapped (${zapTotal.count} zap${zapTotal.count === 1 ? '' : 's'})`;
+        $('tipjar-sponsors').hidden = false;
+      };
+
+      // Sponsor rows under the total: named zappers (verified request
+      // signature + kind-0 profile) summed per person, the rest pooled as
+      // anonymous. Names and links are untrusted data — textContent only.
+      let sponsorSeq = 0;
+      const renderSponsors = async () => {
+        const seq = ++sponsorSeq;
+        try {
+          const [agg, rate] = await Promise.all([
+            ln.aggregateSponsors(RELAYS, sponsorReceipts, { linkCollection: COLLECTIONS.link }),
+            ln.fetchBtcUsd(),
+          ]);
+          if (seq !== sponsorSeq) return; // superseded by a newer render
+          const listEl = $('tipjar-sponsor-list');
+          listEl.textContent = '';
+          const TOP = 5;
+          const row = (label, msat, href) => {
+            const li = document.createElement('li');
+            let labelEl;
+            if (href) {
+              labelEl = document.createElement('a');
+              labelEl.href = href;
+              labelEl.target = '_blank';
+              labelEl.rel = 'noopener noreferrer';
+            } else {
+              labelEl = document.createElement('span');
+              labelEl.className = 'anon';
+            }
+            labelEl.textContent = label;
+            const amt = document.createElement('span');
+            amt.className = 'sats';
+            amt.textContent = rate
+              ? `${fmtSats(msat)} sats (${fmtUsd(msat, rate)})`
+              : `${fmtSats(msat)} sats`;
+            li.append(labelEl, amt);
+            listEl.append(li);
+          };
+          for (const s of agg.named.slice(0, TOP)) {
+            // Mutually linked sponsors carry their atproto identity — link
+            // the bsky profile, matching how authors are presented.
+            const npub = ln.hexToNpub(s.pubkey);
+            const href = s.did
+              ? `https://bsky.app/profile/${s.did}`
+              : npub
+                ? `https://njump.me/${npub}`
+                : null;
+            row(s.name, s.msat, href);
+          }
+          const extra = agg.named.slice(TOP);
+          const restMsat = extra.reduce((sum, s) => sum + s.msat, 0) + agg.anonMsat;
+          if (restMsat > 0) {
+            const parts = [];
+            if (extra.length > 0) parts.push(`${extra.length} more`);
+            if (agg.anonMsat > 0) parts.push('anonymous');
+            row(parts.join(' + '), restMsat, null);
+          }
+        } catch { /* sponsor list is decoration — keep the total line */ }
+      };
+
+      // Zap capability. Nostr documents zap the event itself; atproto
+      // documents zap the author's mutually linked nostr key, carrying the
+      // document's AT-URI so receipts stay attributable per document.
+      // Either way the provider's zap-signing key is what makes relay
+      // receipts trustworthy. Degrades to plain tips when the provider is
+      // unreachable, doesn't support zaps, or (atproto) there is no
+      // two-way-verified nostr link.
+      //
+      // Detection runs in the background: the submit listener below is
+      // attached synchronously (a visible form without its handler would
+      // fall back to a native GET submit = page reload) and awaits
+      // `zapReady` before choosing zap vs plain tip.
+      let zapTarget = null;
+      const zapReady = (async () => {
+        try {
+          const recipientPubkey = AUTHOR.event
+            ? ln.npubToHex(AUTHOR.author)
+            : AUTHOR.atUri
+              ? await ln.resolveLinkedZapPubkey(AUTHOR.author, {
+                  relays: RELAYS,
+                  linkCollection: COLLECTIONS.link,
+                })
+              : null;
+          if (!recipientPubkey) return;
+          // Provider lookup and receipt backlog in parallel — a dead relay
+          // in the list costs one timeout, not one per stage.
+          const receiptsP = ln.fetchZapReceipts(RELAYS,
+            AUTHOR.event ? { eventIds: [AUTHOR.event] } : { pubkey: recipientPubkey });
+          try { params = await ln.payParams(addr); } catch { /* plain tips still work */ }
+          if (!params || !params.allowsNostr) return;
+          zapTarget = {
+            pubkey: recipientPubkey,
+            eventId: AUTHOR.event,
+            atUri: AUTHOR.event ? null : AUTHOR.atUri,
+          };
+          const verified = await ln.verifyZapReceipts(await receiptsP, {
+            nostrPubkey: params.nostrPubkey,
+            eventId: zapTarget.eventId,
+            atUri: zapTarget.atUri,
+          });
+          for (const { event } of verified) seenReceipts.add(event.id);
+          sponsorReceipts = verified;
+          zapTotal = {
+            msat: verified.reduce((s, r) => s + r.msat, 0),
+            count: verified.length,
+          };
+          renderZaps();
+          renderSponsors();
+        } catch { /* detection is best-effort; plain tips still work */ }
+      })();
+
+      let listening = false;
+      $('tipjar-form').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const btn = $('tipjar-go');
+        btn.disabled = true;
+        $('tipjar-invoice').hidden = true;
+        try {
+          status('checking zap support…');
+          await zapReady;
+          status('fetching pay parameters…');
+          params ??= await ln.payParams(addr);
+          const sats = Math.round(Number($('tipjar-amount').value));
+          if (!Number.isFinite(sats) || sats < params.minSats || sats > params.maxSats) {
+            throw new Error(`amount must be ${params.minSats}–${params.maxSats} sats`);
+          }
+          // NIP-57: when zapping is possible, a signed zap request rides
+          // along with the invoice request, so paying it produces a public
+          // receipt on the relays.
+          let zapRequest = null;
+          if (zapTarget && params.allowsNostr) {
+            status('signing zap request…');
+            zapRequest = await ln.makeZapRequest({
+              recipientPubkey: zapTarget.pubkey,
+              eventId: zapTarget.eventId,
+              atUri: zapTarget.atUri,
+              amountMsat: sats * 1000,
+              relays: RELAYS,
+            });
+          }
+          status('requesting invoice…');
+          let pr;
+          try {
+            pr = await ln.requestInvoice(params, sats, { zapRequest });
+          } catch (err) {
+            // Some providers reject zap requests they can't attribute (e.g.
+            // a p tag that doesn't match their registered key) — retry as a
+            // plain, receipt-less tip rather than blocking the payment.
+            if (!zapRequest) throw err;
+            zapRequest = null;
+            pr = await ln.requestInvoice(params, sats);
+          }
+          const { generate } = await import('https://cdn.jsdelivr.net/npm/lean-qr@2.7.2/+esm');
+          generate(pr.toUpperCase()).toCanvas($('tipjar-qr'), {
+            on: [0, 0, 0, 255],
+            off: [255, 255, 255, 255],
+          });
+          $('tipjar-open').href = `lightning:${pr}`;
+          const copy = $('tipjar-copy');
+          copy.onclick = () => navigator.clipboard.writeText(pr).then(() => {
+            copy.textContent = 'copied';
+            copy.classList.add('copied');
+            setTimeout(() => {
+              copy.textContent = 'copy invoice';
+              copy.classList.remove('copied');
+            }, 1200);
+          });
+          $('tipjar-invoice').hidden = false;
+          status(`${zapRequest ? 'zap ' : ''}invoice for ${sats} sats — scan or open in a wallet`);
+          // Watch the relays so the page reacts when the receipt lands.
+          if (zapRequest && !listening) {
+            listening = true;
+            ln.awaitZapReceipt(RELAYS, {
+              eventId: zapTarget.eventId,
+              pubkey: zapTarget.pubkey,
+              atUri: zapTarget.atUri,
+              nostrPubkey: params.nostrPubkey,
+              since: Math.floor(Date.now() / 1000) - 60,
+              seen: seenReceipts,
+            }).then((hit) => {
+              listening = false;
+              if (!hit) return;
+              seenReceipts.add(hit.event.id);
+              sponsorReceipts.push(hit);
+              zapTotal = zapTotal || { msat: 0, count: 0 };
+              zapTotal.msat += hit.msat;
+              zapTotal.count += 1;
+              renderZaps();
+              renderSponsors();
+              $('tipjar-invoice').hidden = true;
+              status('⚡ zap received — thank you!');
+            });
+          }
+        } catch (err) {
+          status(`error: ${err && err.message ? err.message : err}`, true);
+        } finally {
+          btn.disabled = false;
+        }
+      });
+    }
+    }
+  </script>
+</dd>

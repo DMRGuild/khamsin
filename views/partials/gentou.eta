@@ -1,0 +1,1373 @@
+<%/* In-page document viewer. Workers-port notes: the record is client-fetched
+     (window.__vonRecord), so the section renders hidden and unhides at
+     runtime; the record-scoped local IPFS gateway is gone (no Kubo), so the
+     gateway chain is public gateways only; after a successful markup render
+     it dispatches `gentou:rendered` for the local-AI summary hook. */%>
+<section class="gentou-viewer" id="gentou-viewer" hidden>
+  <style>
+    .gentou-viewer {
+      margin-top: 2rem;
+      padding-top: 1.25rem;
+      border-top: 1px solid var(--border);
+    }
+    .gentou-viewer[hidden] { display: none !important; }
+    .gentou-status-group {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+    .gentou-viewer-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.75rem;
+      margin-bottom: 0.75rem;
+    }
+    .gentou-viewer-header h3 {
+      font-family: var(--mono);
+      font-size: 0.85rem;
+      font-weight: 500;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+    .gentou-status {
+      position: relative;
+      font-family: var(--mono);
+      font-size: 0.7rem;
+      padding: 0.15rem 0.6rem;
+      border-radius: 20px;
+      border: 1px solid var(--border);
+      color: var(--text-muted);
+      white-space: nowrap;
+      transition: color 0.15s, border-color 0.15s;
+    }
+    .gentou-status.ready   { border-color: var(--accent); color: var(--accent); }
+    .gentou-status.loading { border-color: var(--red); color: var(--red); }
+    .gentou-status.error   { border-color: var(--red); color: var(--red); }
+
+    /* spinning-light loading border on the status pill */
+    @property --gentou-angle {
+      syntax: '<angle>';
+      initial-value: 0deg;
+      inherits: false;
+    }
+    .gentou-status.loading::before {
+      content: '';
+      position: absolute;
+      inset: -1px;
+      border-radius: 20px;
+      padding: 1px;
+      background: conic-gradient(from var(--gentou-angle), transparent 0deg, var(--red) 35deg, transparent 90deg);
+      -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+      -webkit-mask-composite: xor;
+              mask-composite: exclude;
+      animation: gentou-spin 1.1s linear infinite;
+      pointer-events: none;
+    }
+    @keyframes gentou-spin {
+      to { --gentou-angle: 360deg; }
+    }
+
+    .gentou-retry-btn {
+      font-family: var(--mono);
+      font-size: 0.7rem;
+      padding: 0.1rem 0.5rem;
+      line-height: 1.6;
+    }
+
+    .gentou-frame {
+      position: relative;
+    }
+
+    .gentou-terminal {
+      font-family: var(--mono);
+      font-size: 0.78rem;
+      color: var(--text-muted);
+      line-height: 1.9;
+      overflow-wrap: anywhere;
+    }
+    .gentou-terminal .line::before { content: '> '; color: var(--text-muted); }
+    .gentou-terminal .err { color: var(--red); }
+    .gentou-terminal .ok  { color: var(--accent); }
+    .gentou-terminal .dim { opacity: .5; }
+
+    .gentou-source-badge {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      font-family: var(--mono);
+      font-size: 0.7rem;
+      color: var(--text-muted);
+      margin-bottom: 1.25rem;
+    }
+    .gentou-source-badge::before {
+      content: '';
+      flex-shrink: 0;
+      display: inline-block;
+      width: 6px; height: 6px;
+      border-radius: 50%;
+      background: var(--accent);
+      box-shadow: 0 0 8px var(--accent);
+    }
+    .gentou-source-badge-label {
+      flex: 1 1 auto;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .gentou-download-link {
+      margin-left: auto;
+      flex-shrink: 0;
+      display: inline-flex;
+      align-items: center;
+      gap: 0.3rem;
+      font-family: var(--mono);
+      font-size: 0.7rem;
+      font-weight: 500;
+      letter-spacing: 0.05em;
+      color: var(--accent);
+      text-decoration: none;
+      border: 1px solid var(--accent-dim);
+      border-radius: 3px;
+      padding: 0.2rem 0.6rem;
+      white-space: nowrap;
+      transition: all .15s;
+    }
+    .gentou-download-link:hover {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: var(--bg);
+    }
+
+    /* rendered document */
+    .gentou-prose { overflow-wrap: anywhere; }
+    .gentou-prose h1, .gentou-prose h2, .gentou-prose h3, .gentou-prose h4 {
+      font-family: var(--mono);
+      font-weight: 500;
+      color: var(--accent);
+      margin: 1.6em 0 .5em;
+      line-height: 1.3;
+    }
+    .gentou-prose h1:first-child, .gentou-prose h2:first-child, .gentou-prose h3:first-child {
+      margin-top: 0;
+    }
+    .gentou-prose h1 { font-size: 1.35em; border-bottom: 1px solid var(--border); padding-bottom: .4em; }
+    .gentou-prose h2 { font-size: 1.15em; }
+    .gentou-prose h3 { font-size: 1.05em; }
+    .gentou-prose h4 { font-size: 1em; color: var(--text-muted); }
+    .gentou-prose p { margin: .8em 0; }
+    .gentou-prose a { border-bottom: 1px solid var(--accent-dim); }
+    .gentou-prose blockquote {
+      border-left: 3px solid var(--accent-dim);
+      padding-left: 1rem;
+      color: var(--text-muted);
+      font-style: italic;
+      margin: 1em 0;
+    }
+    .gentou-prose ul, .gentou-prose ol { padding-left: 1.4em; margin: .8em 0; }
+    .gentou-prose li { margin: .25em 0; }
+    .gentou-prose table {
+      display: block;
+      width: max-content;
+      max-width: 100%;
+      overflow-x: auto;
+      border-collapse: collapse;
+      margin: 1.2em 0;
+      font-size: .9em;
+    }
+    .gentou-prose th {
+      font-family: var(--mono);
+      font-size: .75em;
+      text-transform: uppercase;
+      letter-spacing: .05em;
+      color: var(--accent);
+      border-bottom: 1px solid var(--accent-dim);
+      padding: .5em .6em;
+      text-align: left;
+    }
+    .gentou-prose td { border-bottom: 1px solid var(--border); padding: .45em .6em; }
+    .gentou-prose tr:last-child td { border-bottom: none; }
+    .gentou-prose hr { border: none; border-top: 1px solid var(--border); margin: 2em 0; }
+    .gentou-prose img { max-width: 100%; border-radius: 4px; }
+    /* Code must stay strictly fixed-width. The skins' --mono stacks fall
+       back to proportional CJK faces for glyphs their mono face lacks
+       (box drawing, Hangul, …), which shears ASCII art per glyph. Pin
+       document code to fixed-width system faces, which do cover the
+       box-drawing range; a skin can override via --mono-code. */
+    .gentou-prose pre, .gentou-prose code {
+      font-family: var(--mono-code, ui-monospace, "SFMono-Regular", "Cascadia Mono",
+        Consolas, Menlo, "Liberation Mono", "DejaVu Sans Mono", monospace);
+    }
+    .gentou-prose iframe {
+      max-width: 100%;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      background: var(--bg-raised);
+    }
+    .gentou-prose iframe:not([width]) { width: 100%; aspect-ratio: 16 / 9; }
+
+    /* PDF viewer (PDF.js core -> canvas, with a small nav/zoom toolbar) */
+    .gentou-pdf-viewer {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 1rem;
+      margin-bottom: 1.25rem;
+    }
+    .gentou-pdf-toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: center;
+      align-items: center;
+      gap: 0.5rem;
+      background: var(--bg-raised);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 0.4rem 0.75rem;
+      font-family: var(--mono);
+      font-size: 0.7rem;
+      color: var(--text-muted);
+    }
+    .gentou-pdf-btn {
+      width: 26px; height: 26px;
+      background: transparent;
+      border: 1px solid var(--border);
+      border-radius: 3px;
+      color: var(--text-muted);
+      font-family: inherit;
+      font-size: 13px;
+      line-height: 1;
+      cursor: pointer;
+      transition: all .15s;
+    }
+    .gentou-pdf-btn:hover:not(:disabled) { color: var(--accent); border-color: var(--accent-dim); }
+    .gentou-pdf-btn:disabled { opacity: .35; cursor: not-allowed; }
+    .gentou-pdf-page-indicator { display: inline-flex; align-items: center; }
+    .gentou-pdf-page-input {
+      width: 38px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 3px;
+      color: var(--text);
+      font-family: inherit;
+      font-size: 11px;
+      text-align: center;
+      padding: 4px 2px;
+      outline: none;
+    }
+    .gentou-pdf-page-input::-webkit-outer-spin-button,
+    .gentou-pdf-page-input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+    .gentou-pdf-page-input:focus { border-color: var(--accent-dim); }
+    .gentou-pdf-page-sep { margin-left: 5px; }
+    .gentou-pdf-divider { width: 1px; height: 18px; background: var(--border); margin: 0 4px; }
+    .gentou-pdf-zoom-level { min-width: 36px; text-align: center; }
+    .gentou-pdf-canvas-wrap { width: 100%; display: flex; justify-content: center; }
+    .gentou-pdf-page {
+      max-width: 100%;
+      height: auto;
+      background: #fff;
+      border: 1px solid var(--border);
+      box-shadow: 0 4px 24px rgba(0,0,0,.4);
+    }
+  </style>
+
+  <div class="gentou-viewer-header">
+    <h3>Document</h3>
+    <div class="gentou-status-group">
+      <span class="gentou-status" id="gentou-status">idle</span>
+      <button class="gentou-retry-btn" id="gentou-retry-btn" type="button" title="Retry">retry</button>
+    </div>
+  </div>
+
+  <div class="gentou-frame" id="gentou-frame">
+    <div class="gentou-terminal" id="gentou-log"></div>
+  </div>
+
+  <script>
+    // MathJax reads this config when its loader script runs, so it must be
+    // set first. processEscapes lets authors write \$ for a literal dollar
+    // sign in prose — pandoc's readers would normally consume that
+    // backslash before MathJax ever sees it, so the module below smuggles
+    // \$ through conversion intact (see ESCAPED_DOLLAR). typeset: false
+    // because typesetting is done manually on the rendered prose only,
+    // after fetch + pandoc + sanitize complete.
+    window.MathJax = {
+      tex: {
+        inlineMath: [['$', '$'], ['\\(', '\\)']],
+        displayMath: [['$$', '$$'], ['\\[', '\\]']],
+        processEscapes: true,
+      },
+      output: {
+        // Break display equations to the container width instead of
+        // overflowing. Inline-math breaking is on by default in v4 and
+        // reflows with the browser; display breaks are fixed at typeset
+        // time (v4 does not re-break them on resize).
+        displayOverflow: 'linebreak',
+      },
+      startup: { typeset: false },
+    };
+  </script>
+  <script defer src="https://cdn.jsdelivr.net/npm/mathjax@4.1.3/tex-mml-chtml.js"></script>
+
+  <script type="module">
+  (async function() {
+    // The verified record comes from record-page.js; relay/PDS data has
+    // already been signature-checked and format-gated there (eventToRecord),
+    // but everything below still treats field values as untrusted input.
+    const record = await window.__vonRecord;
+    const ARWEAVE_RE = /^[A-Za-z0-9_-]{43}$/;
+    if (
+      !record ||
+      !(record.value.cid ||
+        (typeof record.value.arweave === 'string' && ARWEAVE_RE.test(record.value.arweave)))
+    ) {
+      return; // no viewable payload — the section stays hidden
+    }
+    document.getElementById('gentou-viewer').hidden = false;
+
+    // One identifier serves both storages: an IPFS CID or an Arweave tx id.
+    // The formats are unambiguous (43-char base64url vs Qm…/baf…).
+    const cid         = String(record.value.cid || record.value.arweave);
+    const storageKind = record.value.cid ? 'ipfs' : 'arweave';
+    const fileName    = String(record.value.fileName || '');
+    const otsB64      = String(record.value.ots || '');
+    const frame    = document.getElementById('gentou-frame');
+    const logEl    = document.getElementById('gentou-log');
+    const pill     = document.getElementById('gentou-status');
+    const retryBtn = document.getElementById('gentou-retry-btn');
+
+    function log(msg, cls) {
+      const d = document.createElement('div');
+      d.className = 'line' + (cls ? ' ' + cls : '');
+      d.textContent = msg;
+      logEl.appendChild(d);
+    }
+
+    function setStatus(text, cls) {
+      pill.textContent = text;
+      pill.className = 'gentou-status' + (cls ? ' ' + cls : '');
+    }
+
+    // IPFS gateway fallback chain — public gateways only (this deployment
+    // runs no IPFS node of its own). Pinata first: uploads are pinned there,
+    // so its gateway serves fresh pins immediately while the others wait on
+    // DHT propagation.
+    const GATEWAYS = [
+      'https://gateway.pinata.cloud/ipfs/',
+      'https://ipfs.io/ipfs/',
+      'https://dweb.link/ipfs/',
+    ];
+
+    // Arweave gateway fallback chain. The first entry is the operator's
+    // configured gateway. Fallbacks are ar.io network gateways verified to
+    // serve raw tx data with CORS.
+    const AR_GATEWAYS = [...new Set([
+      String(window.VON.arweaveGateway || 'https://arweave.net').replace(/\/+$/, '') + '/',
+      'https://arweave.net/',
+      'https://ar-io.dev/',
+      'https://aoweave.tech/',
+    ])];
+
+    // Pandoc emits standard prose HTML plus MathML with <annotation>/
+    // <semantics> wrappers (text-only — they just carry the original LaTeX
+    // source for accessibility/copy-paste) and inline `style` attributes
+    // (e.g. table cell alignment). DOMPurify's `mathMl` profile omits
+    // annotation/semantics by default, so add them back explicitly.
+    // MathJax typesets after sanitization, so its own generated markup
+    // never passes through DOMPurify.
+    // <iframe> is allowed only so the vetIframe hook below can inspect it —
+    // any iframe the hook doesn't rebuild against EMBED_SOURCES is removed.
+    const purifyConfig = {
+      USE_PROFILES: { html: true, mathMl: true },
+      ADD_TAGS: ['annotation', 'semantics', 'iframe'],
+      ADD_ATTR: ['style', 'sandbox', 'allow', 'allowfullscreen', 'referrerpolicy', 'loading'],
+    };
+
+    // ── iframe embed allowlist ───────────────────────────────────
+    // Maps an exact hostname to a function that inspects the parsed URL and
+    // returns a rebuilt, known-safe src — or null to reject. The author's
+    // URL never passes through as-is: only validated IDs are extracted and
+    // re-assembled, so hostname lookalikes (youtube.com.evil.com) and stray
+    // query/path payloads can't survive.
+    const EMBED_ID = /^[\w-]+$/;
+
+    function pathId(url, prefix) {
+      if (!url.pathname.startsWith(prefix)) return null;
+      const id = url.pathname.slice(prefix.length).split('/')[0];
+      return EMBED_ID.test(id) ? id : null;
+    }
+
+    const youtube = url => {
+      const id = pathId(url, '/embed/');
+      return id && `https://www.youtube-nocookie.com/embed/${id}`;
+    };
+
+    const EMBED_SOURCES = {
+      'youtube.com': youtube,
+      'www.youtube.com': youtube,
+      'youtube-nocookie.com': youtube,
+      'www.youtube-nocookie.com': youtube,
+      'player.vimeo.com': url => {
+        const id = pathId(url, '/video/');
+        return id && `https://player.vimeo.com/video/${id}`;
+      },
+      'www.dailymotion.com': url => {
+        const id = pathId(url, '/embed/video/');
+        return id && `https://www.dailymotion.com/embed/video/${id}`;
+      },
+      'geo.dailymotion.com': url => {
+        const id = url.pathname === '/player.html' ? url.searchParams.get('video') : null;
+        return id && EMBED_ID.test(id)
+          ? `https://geo.dailymotion.com/player.html?video=${id}`
+          : null;
+      },
+      'open.spotify.com': url => {
+        const m = url.pathname.match(/^\/embed\/(track|album|playlist|episode|show|artist)\/([\w-]+)$/);
+        return m && `https://open.spotify.com/embed/${m[1]}/${m[2]}`;
+      },
+      'w.soundcloud.com': url => {
+        // Player src carries the target as a url= param — validate that the
+        // inner URL really points at the SoundCloud API before re-encoding.
+        if (!/^\/player\/?$/.test(url.pathname)) return null;
+        let inner;
+        try { inner = new URL(url.searchParams.get('url')); } catch { return null; }
+        if (inner.protocol !== 'https:' || inner.hostname !== 'api.soundcloud.com') return null;
+        return `https://w.soundcloud.com/player/?url=${encodeURIComponent(inner.href)}`;
+      },
+      'player.twitch.tv': url => {
+        // Twitch requires parent= to match the embedding page's hostname,
+        // so it is set here rather than taken from the author.
+        const channel = url.searchParams.get('channel');
+        const video = url.searchParams.get('video');
+        if (channel && /^\w+$/.test(channel))
+          return `https://player.twitch.tv/?channel=${channel}&parent=${location.hostname}`;
+        if (video && /^v?\d+$/.test(video))
+          return `https://player.twitch.tv/?video=${video}&parent=${location.hostname}`;
+        return null;
+      },
+      'www.google.com': url => {
+        // Maps embeds only. pb= is an opaque blob; re-encode it and drop
+        // every other param.
+        const pb = url.pathname === '/maps/embed' ? url.searchParams.get('pb') : null;
+        return pb ? `https://www.google.com/maps/embed?pb=${encodeURIComponent(pb)}` : null;
+      },
+      'codepen.io': url => {
+        const m = url.pathname.match(/^\/([\w-]+)\/embed\/(?:preview\/)?([\w-]+)\/?$/);
+        return m && `https://codepen.io/${m[1]}/embed/${m[2]}`;
+      },
+    };
+
+    function vetIframe(node, data) {
+      if (data.tagName !== 'iframe') return;
+      let url = null;
+      try { url = new URL(node.getAttribute('src') || ''); } catch {}
+      const rebuild = url && url.protocol === 'https:' ? EMBED_SOURCES[url.hostname] : null;
+      const safeSrc = rebuild ? rebuild(url) : null;
+      if (!safeSrc) { node.remove(); return; }
+      // Keep only author-specified dimensions; reset every other attribute.
+      const width = node.getAttribute('width');
+      const height = node.getAttribute('height');
+      for (const attr of [...node.attributes]) node.removeAttribute(attr.name);
+      node.setAttribute('src', safeSrc);
+      // Cross-origin frame: allow-same-origin grants nothing on this page's
+      // origin, but the players need it (and scripts) to function.
+      node.setAttribute('sandbox',
+        'allow-scripts allow-same-origin allow-presentation allow-popups allow-popups-to-escape-sandbox');
+      node.setAttribute('allow', 'autoplay; encrypted-media; picture-in-picture; fullscreen');
+      node.setAttribute('allowfullscreen', '');
+      // Not no-referrer: YouTube's player requires the embedding origin in
+      // the Referer header and fails with error 153 without it. This sends
+      // only the origin cross-origin, never the full page URL.
+      node.setAttribute('referrerpolicy', 'strict-origin-when-cross-origin');
+      node.setAttribute('loading', 'lazy');
+      if (width && /^\d{1,4}$/.test(width)) node.setAttribute('width', width);
+      if (height && /^\d{1,4}$/.test(height)) node.setAttribute('height', height);
+    }
+
+    // DOMPurify is loaded once and the iframe hook attached once — run()
+    // can be retried, and re-adding the hook would run it again per node.
+    let purifierPromise = null;
+    function getPurifier() {
+      purifierPromise ??= import('https://cdn.jsdelivr.net/npm/dompurify@3.4.8/dist/purify.es.mjs')
+        .then(({ default: DOMPurify }) => {
+          DOMPurify.addHook('uponSanitizeElement', vetIframe);
+          return DOMPurify;
+        });
+      return purifierPromise;
+    }
+
+    async function fetchFromIPFS(cid) {
+      for (const gw of GATEWAYS) {
+        try {
+          log(`trying ${gw}${cid.slice(0,12)}...`);
+          const res = await fetch(gw + cid, { signal: AbortSignal.timeout(10000) });
+          if (res.ok) {
+            // Always read the raw bytes: PDF is binary, and even text
+            // documents must keep their exact bytes so the OpenTimestamps
+            // digest can be computed over what was actually fetched. The
+            // content-type (gateways sniff this) or a ".pdf" path hint only
+            // decides how the bytes are interpreted.
+            const contentType = res.headers.get('content-type') || '';
+            const bytes = new Uint8Array(await res.arrayBuffer());
+            const host = new URL(gw, location.origin).hostname;
+            // A bare single-file CID carries no filename, and not every
+            // gateway sniffs — so also check the "%PDF-" magic bytes, or the
+            // binary would be decoded as text and fed to pandoc.
+            const isPdf = contentType.includes('application/pdf')
+              || /\.pdf$/i.test(cid)
+              || (bytes[0] === 0x25 && bytes[1] === 0x50 && bytes[2] === 0x44
+                  && bytes[3] === 0x46 && bytes[4] === 0x2d);
+            if (isPdf) {
+              log(`fetched ${bytes.length} bytes (pdf) via ${host}`, 'ok');
+              return { kind: 'pdf', bytes, gateway: gw };
+            }
+            log(`fetched ${bytes.length} bytes via ${host}`, 'ok');
+            return { kind: 'doc', bytes, gateway: gw };
+          }
+        } catch (e) {
+          log(`  -> failed: ${e.message}`, 'err');
+        }
+      }
+      throw new Error('All IPFS gateways failed');
+    }
+
+    // Detect directory CID: fetch trailing-slash URL, parse HTML listing.
+    async function listIPFSDir(cid, gateway) {
+      try {
+        const url = gateway + cid + '/';
+        const res = await fetch(url, { signal: AbortSignal.timeout(10000) });
+        if (!res.ok) return null;
+        const contentType = res.headers.get('content-type') || '';
+        if (!contentType.includes('text/html')) return null;
+        const html = await res.text();
+        const links = [];
+        // Public gateways link as href="/ipfs/CID/name"; tolerate any
+        // non-quote prefix before /ipfs/.
+        const re = /href="[^"]*\/ipfs\/([^/"]+)\/([^"]+)"/g;
+        let m;
+        while ((m = re.exec(html)) !== null) {
+          const [, dirCid, name] = m;
+          if (dirCid === cid && !name.startsWith('?') && name !== '..') {
+            links.push({ Name: name, gateway, cid });
+          }
+        }
+        return links.length > 0 ? links : null;
+      } catch {
+        return null;
+      }
+    }
+
+    // ── Arweave fetch + in-browser archive extraction ────────────
+    // Arweave stores the original uploaded file as-is (archives included);
+    // no server ever unpacks it, so extraction happens here.
+    class PendingTx extends Error {}
+
+    async function fetchFromArweave(txId) {
+      let sawPending = false;
+      for (const gw of AR_GATEWAYS) {
+        try {
+          log(`trying ${gw}${txId.slice(0, 12)}...`);
+          const res = await fetch(gw + txId, { signal: AbortSignal.timeout(15000) });
+          // Gateways answer 202 for accepted-but-unmined txs, and 404 for
+          // ones they haven't seen yet — both can mean "come back shortly".
+          if (res.status === 202 || res.status === 404) {
+            sawPending = true;
+            log(`  -> ${res.status === 202 ? 'accepted but not mined yet' : 'not found (may not be mined yet)'}`, 'dim');
+            continue;
+          }
+          if (res.ok) {
+            const bytes = new Uint8Array(await res.arrayBuffer());
+            log(`fetched ${bytes.length} bytes via ${new URL(gw).hostname}`, 'ok');
+            return { bytes, gateway: gw };
+          }
+          log(`  -> HTTP ${res.status}`, 'err');
+        } catch (e) {
+          log(`  -> failed: ${e.message}`, 'err');
+        }
+      }
+      if (sawPending) throw new PendingTx('transaction not available on any gateway yet');
+      throw new Error('All Arweave gateways failed');
+    }
+
+    const isZipMagic  = b => b.length > 3 && b[0] === 0x50 && b[1] === 0x4b
+      && (b[2] === 3 || b[2] === 5 || b[2] === 7);
+    const isGzipMagic = b => b.length > 2 && b[0] === 0x1f && b[1] === 0x8b;
+    const isPdfMagic  = b => b.length > 4 && b[0] === 0x25 && b[1] === 0x50
+      && b[2] === 0x44 && b[3] === 0x46 && b[4] === 0x2d;
+    const looksLikeArchive = (bytes) => isZipMagic(bytes) || isGzipMagic(bytes);
+
+    // Zip-bomb guards, enforced before any entry is inflated.
+    const ARC_LIMITS = {
+      maxEntries: 1000,
+      maxTotal: 256 * 1024 * 1024,
+      maxEntry: 64 * 1024 * 1024,
+    };
+
+    // Minimal ustar reader: 512-byte headers, octal size, regular files only.
+    function parseTar(tar, files, limits) {
+      const dec = new TextDecoder();
+      const str = (from, to) => dec.decode(tar.subarray(from, to)).replace(/\0[\s\S]*$/, '');
+      let off = 0, count = 0;
+      while (off + 512 <= tar.length) {
+        const block = tar.subarray(off, off + 512);
+        if (block.every(b => b === 0)) break; // end-of-archive marker
+        let name = str(off, off + 100);
+        const prefix = str(off + 345, off + 500); // POSIX ustar long-path prefix
+        if (prefix) name = prefix + '/' + name;
+        const size = parseInt(str(off + 124, off + 136).trim(), 8) || 0;
+        const type = tar[off + 156];
+        off += 512;
+        if ((type === 0x30 || type === 0) && name) { // '0' or NUL → regular file
+          if (++count > limits.maxEntries) throw new Error('archive: too many entries');
+          if (size > limits.maxEntry) throw new Error(`archive: entry too large (${name})`);
+          files.set(name, tar.slice(off, Math.min(off + size, tar.length)));
+        }
+        off += Math.ceil(size / 512) * 512;
+      }
+    }
+
+    async function extractArchive(rawBytes, name) {
+      const fflate = await import('https://cdn.jsdelivr.net/npm/fflate@0.8.2/esm/browser.js');
+      const files = new Map(); // relPath -> Uint8Array
+      if (isZipMagic(rawBytes)) {
+        let count = 0, total = 0;
+        const out = fflate.unzipSync(rawBytes, {
+          filter(f) {
+            if (f.name.endsWith('/')) return false;
+            if (++count > ARC_LIMITS.maxEntries) throw new Error('archive: too many entries');
+            if (f.originalSize > ARC_LIMITS.maxEntry) throw new Error(`archive: entry too large (${f.name})`);
+            total += f.originalSize;
+            if (total > ARC_LIMITS.maxTotal) throw new Error('archive: uncompressed size limit exceeded');
+            return true;
+          },
+        });
+        for (const [n, bytes] of Object.entries(out)) files.set(n, bytes);
+      } else if (isGzipMagic(rawBytes)) {
+        // Streaming gunzip with a running cap, so a gzip bomb aborts long
+        // before it can exhaust browser memory.
+        const chunks = [];
+        let total = 0;
+        const gz = new fflate.Gunzip((chunk) => {
+          total += chunk.length;
+          if (total > ARC_LIMITS.maxTotal) throw new Error('archive: uncompressed size limit exceeded');
+          chunks.push(chunk);
+        });
+        gz.push(rawBytes, true);
+        const tar = new Uint8Array(total);
+        let o = 0;
+        for (const c of chunks) { tar.set(c, o); o += c.length; }
+        parseTar(tar, files, ARC_LIMITS);
+      } else {
+        throw new Error(`${name}: not a recognized archive (zip or tar.gz)`);
+      }
+      if (files.size === 0) throw new Error(`${name}: archive contains no files`);
+      // Mirror the single-top-level-directory unwrap so entry names match
+      // what an IPFS directory pipeline would have produced.
+      const names = [...files.keys()];
+      const tops = new Set(names.map(n => n.split('/')[0]));
+      if (tops.size === 1 && names.every(n => n.includes('/'))) {
+        const p = [...tops][0].length + 1;
+        return new Map(names.map(n => [n.slice(p), files.get(n)]));
+      }
+      return files;
+    }
+
+    const IMAGE_EXTS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg', '.avif']);
+    // Blob types for extracted/fetched image bytes — SVG in particular only
+    // renders from a blob URL when the MIME type is explicit.
+    const IMAGE_MIME = {
+      '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
+      '.gif': 'image/gif', '.webp': 'image/webp', '.svg': 'image/svg+xml',
+      '.avif': 'image/avif',
+    };
+    function extOf(name) {
+      const i = name.lastIndexOf('.');
+      return i >= 0 ? name.slice(i).toLowerCase() : '';
+    }
+
+    // Map file extensions to pandoc reader format names (--from=...).
+    const FORMAT_BY_EXT = {
+      '.org':       'org',
+      '.md':        'markdown',
+      '.markdown':  'markdown',
+      '.mkd':       'markdown',
+      '.mdown':     'markdown',
+      '.mdwn':      'markdown',
+      '.rst':       'rst',
+      '.textile':   'textile',
+      '.wiki':      'mediawiki',
+      '.mediawiki': 'mediawiki',
+      '.muse':      'muse',
+      '.tex':       'latex',
+      '.latex':     'latex',
+      '.typ':       'typst',
+      '.html':      'html',
+      '.htm':       'html',
+    };
+
+    function formatFromName(name) {
+      return FORMAT_BY_EXT[extOf(name)] || null;
+    }
+
+    // Single-file CIDs carry no filename, but a gateway-style path
+    // (e.g. "bafy.../notes.md") can hint at the format.
+    function formatFromCidPath(cidInput) {
+      const last = cidInput.split('/').filter(Boolean).pop() || '';
+      return formatFromName(last);
+    }
+
+    // Reverse of FORMAT_BY_EXT — used only to name a sensible download
+    // file when the original filename is unknown.
+    const EXT_BY_FORMAT = {
+      org: '.org', markdown: '.md', rst: '.rst', textile: '.textile',
+      mediawiki: '.wiki', muse: '.muse', latex: '.tex', typst: '.typ',
+      html: '.html',
+    };
+
+    // Last path segment of a CID string, if it looks like a filename (has a dot).
+    function filenameHint(cidInput) {
+      const last = cidInput.split('/').filter(Boolean).pop() || '';
+      return last.includes('.') ? last : null;
+    }
+
+    // Rewrite img src attributes to blob URLs. Must run on the sanitized
+    // DOM: DOMPurify's allowed-URI list has no blob: scheme, so blob srcs
+    // assigned before sanitize get stripped.
+    function rewriteImageSrcs(root, imageMap) {
+      if (imageMap.size === 0) return;
+      root.querySelectorAll('img').forEach(img => {
+        const src = img.getAttribute('src') || '';
+        const name = src.split('/').pop();
+        if (imageMap.has(name)) {
+          img.src = imageMap.get(name);
+        } else {
+          for (const [fname, blobUrl] of imageMap) {
+            if (src.includes(fname) || fname.includes(src)) {
+              img.src = blobUrl;
+              break;
+            }
+          }
+        }
+      });
+    }
+
+    // ── Escaped dollars (\$) vs MathJax ──────────────────────────
+    // Every supported reader treats \$ as an escaped dollar and emits a
+    // bare `$` — indistinguishable, in pandoc's HTML output, from a `$`
+    // the author meant as a math delimiter, so MathJax's $…$ scan would
+    // pair two escaped dollars into a phantom equation. Swap \$ for a
+    // private-use sentinel before conversion and back to \$ afterwards:
+    // in prose, MathJax's processEscapes then renders a literal $; in
+    // pre/code (which MathJax skips) the author's \$ stays verbatim.
+    // U+E000 is a private-use codepoint, so real documents never carry it.
+    const ESCAPED_DOLLAR = '\uE000';
+    const protectEscapedDollars = (text) => text.replaceAll('\\$', ESCAPED_DOLLAR);
+    const restoreEscapedDollars = (html) => html.replaceAll(ESCAPED_DOLLAR, '\\$');
+
+    // ── Pandoc WASM ──────────────────────────────────────────────
+    let pandocWasm = null;
+    let pandocReady = false;
+    let wasiShim = null;
+
+    // Primary source: the same-origin gzipped static asset (~16 MB —
+    // pandoc.wasm itself exceeds the 25 MiB per-file asset limit, so it
+    // ships pre-compressed and is inflated here with DecompressionStream).
+    // Fallback: the uncompressed R2-backed route, for deployments that
+    // provisioned the bucket instead.
+    async function compilePandocWasm() {
+      try {
+        const res = await fetch('/gentou/pandoc.wasm.gz');
+        if (res.ok && res.body) {
+          const inflated = new Response(
+            res.body.pipeThrough(new DecompressionStream('gzip')),
+            { headers: { 'Content-Type': 'application/wasm' } },
+          );
+          return await WebAssembly.compileStreaming(inflated);
+        }
+        log(`pandoc.wasm.gz unavailable (${res.status}) — trying R2 route`, 'dim');
+      } catch (e) {
+        log(`pandoc.wasm.gz failed: ${e.message} — trying R2 route`, 'dim');
+      }
+      return await WebAssembly.compileStreaming(fetch('/gentou/pandoc.wasm'));
+    }
+
+    async function initPandoc() {
+      log('fetching pandoc.wasm (~16MB)...');
+      wasiShim = await import('https://cdn.jsdelivr.net/npm/@bjorn3/browser_wasi_shim@0.4.2/dist/index.js');
+      try {
+        pandocWasm = await compilePandocWasm();
+        pandocReady = true;
+        log('pandoc.wasm compiled', 'ok');
+      } catch (e) {
+        log(`pandoc.wasm load failed: ${e.message}`, 'err');
+        pandocReady = false;
+      }
+    }
+
+    // convert via direct WASI instantiation — each conversion gets a
+    // fresh WASI instance (stateless). `bibs` is [{name, bytes}] of
+    // bibliography files placed into pandoc's virtual cwd; when present,
+    // citeproc resolves citations against them using pandoc's built-in
+    // default CSL style.
+    async function convertDoc(docText, format, bibs = []) {
+      if (!pandocReady || !pandocWasm) throw new Error('pandoc.wasm not loaded');
+      const { WASI, File, OpenFile, ConsoleStdout, PreopenDirectory } = wasiShim;
+
+      const enc = new TextEncoder();
+      const stdinBytes = enc.encode(docText);
+      let stdout = '';
+      let stderr = '';
+
+      const fds = [
+        new OpenFile(new File(stdinBytes)),
+        ConsoleStdout.lineBuffered(l => { stdout += l + '\n'; }),
+        ConsoleStdout.lineBuffered(l => { stderr += l + '\n'; log(`stderr: ${l}`, 'dim'); }),
+        new PreopenDirectory('.', new Map(bibs.map(b => [b.name, new File(b.bytes)]))),
+      ];
+
+      const args = ['pandoc', `--from=${format}`, '--to=html'];
+      if (bibs.length > 0) {
+        args.push('--citeproc');
+        for (const b of bibs) args.push(`--bibliography=${b.name}`);
+      }
+      const wasi = new WASI(args, [], fds);
+
+      const instance = await WebAssembly.instantiate(pandocWasm, {
+        wasi_snapshot_preview1: wasi.wasiImport,
+      });
+      wasi.start(instance);
+      log(`stdout: ${stdout.length} chars, stderr: ${stderr.length} chars`, 'dim');
+      if (!stdout.trim()) return '<pre>pandoc stderr:\n' + (stderr || '(none)') + '</pre>';
+      return stdout;
+    }
+
+    // True if the user is typing somewhere — keyboard shortcuts should stay out of the way.
+    function isTypingTarget(el) {
+      return !!el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable);
+    }
+
+    // Tracks the PDF viewer's keydown listener so it can be torn down on retry.
+    let pdfKeyHandler = null;
+
+    // Offer the fetched source blob as a download — revoking the previous
+    // object URL so repeated loads don't leak memory.
+    let downloadUrl = null;
+
+    function addDownloadLink(blob, filename, container) {
+      if (downloadUrl) URL.revokeObjectURL(downloadUrl);
+      downloadUrl = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.className = 'gentou-download-link';
+      a.href = downloadUrl;
+      a.download = filename;
+      a.textContent = '↓ download';
+      container.appendChild(a);
+    }
+
+    // Mount a minimal PDF.js-powered viewer: one page on a <canvas> plus a
+    // small toolbar for page navigation and zoom.
+    async function renderPDF(blob, container) {
+      const pdfjsLib = await import('https://cdn.jsdelivr.net/npm/pdfjs-dist@6.0.227/build/pdf.min.mjs');
+      pdfjsLib.GlobalWorkerOptions.workerSrc =
+        'https://cdn.jsdelivr.net/npm/pdfjs-dist@6.0.227/build/pdf.worker.min.mjs';
+
+      const data = await blob.arrayBuffer();
+      const pdf = await pdfjsLib.getDocument({ data }).promise;
+      log(`pdf loaded - ${pdf.numPages} page(s)`, 'ok');
+
+      const SCALE_STEP = 0.25, MIN_SCALE = 0.5, MAX_SCALE = 3;
+      let pageNum = 1;
+      let scale = 1.5;
+
+      const toolbar = document.createElement('div');
+      toolbar.className = 'gentou-pdf-toolbar';
+      toolbar.innerHTML = `
+        <button class="gentou-pdf-btn" data-act="prev" title="Previous page (←)">‹</button>
+        <span class="gentou-pdf-page-indicator">
+          <input class="gentou-pdf-page-input" type="number" min="1" max="${pdf.numPages}" value="1" />
+          <span class="gentou-pdf-page-sep">/ ${pdf.numPages}</span>
+        </span>
+        <button class="gentou-pdf-btn" data-act="next" title="Next page (→)">›</button>
+        <span class="gentou-pdf-divider"></span>
+        <button class="gentou-pdf-btn" data-act="zoom-out" title="Zoom out (-)">−</button>
+        <span class="gentou-pdf-zoom-level"></span>
+        <button class="gentou-pdf-btn" data-act="zoom-in" title="Zoom in (+)">+</button>
+      `;
+      const pageInput  = toolbar.querySelector('.gentou-pdf-page-input');
+      const zoomLabel  = toolbar.querySelector('.gentou-pdf-zoom-level');
+      const prevBtn    = toolbar.querySelector('[data-act="prev"]');
+      const nextBtn    = toolbar.querySelector('[data-act="next"]');
+      const zoomOutBtn = toolbar.querySelector('[data-act="zoom-out"]');
+      const zoomInBtn  = toolbar.querySelector('[data-act="zoom-in"]');
+
+      const canvasWrap = document.createElement('div');
+      canvasWrap.className = 'gentou-pdf-canvas-wrap';
+      const canvas = document.createElement('canvas');
+      canvas.className = 'gentou-pdf-page';
+      canvasWrap.appendChild(canvas);
+
+      container.append(toolbar, canvasWrap);
+
+      async function renderCurrentPage() {
+        const page = await pdf.getPage(pageNum);
+        const viewport = page.getViewport({ scale });
+        canvas.width = viewport.width;
+        canvas.height = viewport.height;
+        await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
+
+        pageInput.value = String(pageNum);
+        zoomLabel.textContent = `${Math.round(scale * 100)}%`;
+        prevBtn.disabled    = pageNum <= 1;
+        nextBtn.disabled    = pageNum >= pdf.numPages;
+        zoomOutBtn.disabled = scale <= MIN_SCALE;
+        zoomInBtn.disabled  = scale >= MAX_SCALE;
+      }
+
+      prevBtn.addEventListener('click', () => { pageNum--; renderCurrentPage(); });
+      nextBtn.addEventListener('click', () => { pageNum++; renderCurrentPage(); });
+      zoomOutBtn.addEventListener('click', () => { scale = Math.max(MIN_SCALE, scale - SCALE_STEP); renderCurrentPage(); });
+      zoomInBtn.addEventListener('click',  () => { scale = Math.min(MAX_SCALE, scale + SCALE_STEP); renderCurrentPage(); });
+      pageInput.addEventListener('change', () => {
+        const n = parseInt(pageInput.value, 10);
+        pageNum = Number.isFinite(n) ? Math.min(Math.max(n, 1), pdf.numPages) : pageNum;
+        renderCurrentPage();
+      });
+
+      // Keyboard shortcuts: ←/→ page through, +/− zoom.
+      pdfKeyHandler = e => {
+        if (isTypingTarget(document.activeElement)) return;
+        if (e.key === 'ArrowLeft' && pageNum > 1) {
+          e.preventDefault(); pageNum--; renderCurrentPage();
+        } else if (e.key === 'ArrowRight' && pageNum < pdf.numPages) {
+          e.preventDefault(); pageNum++; renderCurrentPage();
+        } else if ((e.key === '+' || e.key === '=') && scale < MAX_SCALE) {
+          e.preventDefault(); scale = Math.min(MAX_SCALE, scale + SCALE_STEP); renderCurrentPage();
+        } else if ((e.key === '-' || e.key === '_') && scale > MIN_SCALE) {
+          e.preventDefault(); scale = Math.max(MIN_SCALE, scale - SCALE_STEP); renderCurrentPage();
+        }
+      };
+      window.addEventListener('keydown', pdfKeyHandler);
+
+      await renderCurrentPage();
+    }
+
+    // ── OpenTimestamps verification ──────────────────────────────
+    // The record's proof commits to the SHA-256 of the *entry document*.
+    // Verification hashes the bytes actually fetched — never a digest the
+    // record claims — in a module worker (/gentou/ots-worker.js), which also
+    // cross-checks the attested Bitcoin block header across independent
+    // Esplora explorers — both must agree or verification fails. Results
+    // land in the #ots-verify panel that record.eta renders in the metadata
+    // list; progress lines go to the panel's own log.
+    const OTS_EXPLORERS = ['https://blockstream.info/api', 'https://mempool.space/api'];
+
+    const otsPanel = document.getElementById('ots-verify');
+    const otsIcon  = document.getElementById('ots-verify-icon');
+    const otsText  = document.getElementById('ots-verify-text');
+    const otsLinks = document.getElementById('ots-verify-links');
+    const otsLog   = document.getElementById('ots-verify-log');
+
+    // The whole OTS row starts hidden (the shell doesn't know whether the
+    // record carries a proof); unhide it the first time there is anything
+    // to say.
+    function showOtsRow() {
+      const dt = document.getElementById('rec-ots-dt');
+      const dd = document.getElementById('rec-ots-dd');
+      if (dt) dt.hidden = false;
+      if (dd) dd.hidden = false;
+    }
+
+    function otsLogLine(msg, cls) {
+      if (!otsLog) return;
+      const d = document.createElement('div');
+      d.className = 'line' + (cls ? ' ' + cls : '');
+      d.textContent = msg;
+      otsLog.appendChild(d);
+      otsLog.scrollTop = otsLog.scrollHeight;
+    }
+
+    function setOts(state, text, title) {
+      if (!otsPanel) return;
+      showOtsRow();
+      otsIcon.className = 'ots-verify-icon ' + state;
+      otsIcon.textContent = { loading: '⧗', ok: '✓', err: '✗', dim: '·' }[state] || '·';
+      otsText.textContent = text;
+      otsText.title = title || '';
+    }
+
+    function addOtsLink(href, label) {
+      const a = document.createElement('a');
+      a.href = href;
+      a.target = '_blank';
+      a.rel = 'noopener noreferrer';
+      a.textContent = label;
+      otsLinks.appendChild(a);
+    }
+
+    function b64ToBytes(b64) {
+      const bin = atob(b64.replace(/\s+/g, ''));
+      const out = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+      return out;
+    }
+
+    function renderOtsResult(m) {
+      otsLinks.textContent = '';
+      if (m.status === 'verified') {
+        const utc = new Date(m.time * 1000).toISOString().replace('T', ' ').slice(0, 16) + ' UTC';
+        setOts('ok',
+          `existed as of ${utc} — Bitcoin block ${m.height}`,
+          `sha256: ${m.digest}\nblock: ${m.blockHash}\nmerkle root: ${m.merkleRoot}\n` +
+            `verified via: ${m.sources.join(', ')}` +
+            (m.upgraded ? '\nproof completed live from calendar server(s)' : ''));
+        addOtsLink(`https://mempool.space/block/${m.blockHash}`, 'mempool');
+        addOtsLink(`https://blockstream.info/block/${m.blockHash}`, 'blockstream');
+        if (m.txid) addOtsLink(`https://mempool.space/tx/${m.txid}`, `tx ${m.txid.slice(0, 12)}…`);
+      } else if (m.status === 'pending') {
+        setOts('dim', 'timestamped, but not yet anchored in Bitcoin (calendar attestation pending)',
+          'pending calendars:\n' + m.calendars.join('\n'));
+      } else if (m.status === 'mismatch') {
+        setOts('err', 'verification FAILED: content does not match the timestamped file',
+          `local sha256: ${m.localDigest}\nproof commits to: ${m.proofDigest}`);
+      } else {
+        setOts('err', 'verification failed: ' + m.message);
+      }
+    }
+
+    let otsWorker = null;
+    let otsRunId = 0; // invalidates in-flight verifications on retry
+
+    async function verifyRecordTimestamp({ contentName, contentBytes, links, gateway }) {
+      if (!otsPanel) return;
+      const runId = ++otsRunId;
+      if (otsWorker) { otsWorker.terminate(); otsWorker = null; }
+      otsLinks.textContent = '';
+      if (otsLog) otsLog.textContent = '';
+
+      // The proof also ships inside the IPFS content as `<entryDoc>.ots` —
+      // the fallback when the record's base64 field is missing or mangled.
+      const otsEntry = (links || []).find(l => extOf(l.Name) === '.ots') || null;
+      let proofBytes = null;
+      if (otsB64) {
+        try { proofBytes = b64ToBytes(otsB64); }
+        catch { otsLogLine('record ots field is not valid base64', 'err'); }
+      }
+      if (!proofBytes && otsEntry) {
+        setOts('loading', 'fetching timestamp proof from IPFS...');
+        const res = await fetch(gateway + cid + '/' + encodeURIComponent(otsEntry.Name),
+          { signal: AbortSignal.timeout(10000) });
+        if (runId !== otsRunId) return;
+        if (res.ok) proofBytes = new Uint8Array(await res.arrayBuffer());
+      }
+      if (!proofBytes) { return; } // no proof → the OTS row stays hidden
+
+      // The stamp covers the entry document — usually the file already
+      // fetched for rendering; fetch it separately only when it differs.
+      const stampedName = otsEntry ? otsEntry.Name.slice(0, -4) : contentName;
+      let fileBytes = contentBytes;
+      if (stampedName !== contentName) {
+        setOts('loading', `fetching stamped file (${stampedName})...`);
+        const res = await fetch(gateway + cid + '/' + encodeURIComponent(stampedName),
+          { signal: AbortSignal.timeout(15000) });
+        if (runId !== otsRunId) return;
+        if (!res.ok) {
+          setOts('err', `could not fetch the stamped file ${stampedName} (${res.status})`);
+          return;
+        }
+        fileBytes = new Uint8Array(await res.arrayBuffer());
+      }
+
+      setOts('loading', 'verifying Bitcoin timestamp...');
+      const worker = otsWorker = new Worker('/gentou/ots-worker.js', { type: 'module' });
+      worker.onmessage = (e) => {
+        if (runId !== otsRunId) { worker.terminate(); return; }
+        if (e.data.type === 'log') { otsLogLine(e.data.msg, e.data.cls); return; }
+        worker.terminate();
+        if (otsWorker === worker) otsWorker = null;
+        renderOtsResult(e.data);
+      };
+      worker.onerror = (e) => {
+        if (runId !== otsRunId) return;
+        worker.terminate();
+        if (otsWorker === worker) otsWorker = null;
+        setOts('err', 'verification failed: ' + (e.message || 'worker error'));
+      };
+      // Copies are transferred: the render/download path still needs the bytes.
+      const fb = fileBytes.slice().buffer;
+      const pb = proofBytes.slice().buffer;
+      worker.postMessage({ fileBytes: fb, otsBytes: pb, explorers: OTS_EXPLORERS }, [fb, pb]);
+    }
+
+    // main fetch + convert flow
+    async function run() {
+      setStatus('fetching', 'loading');
+      retryBtn.disabled = true;
+      logEl.innerHTML = '';
+      frame.querySelector('.gentou-source-badge')?.remove();
+      frame.querySelector('.gentou-prose')?.remove();
+      frame.querySelector('.gentou-pdf-viewer')?.remove();
+      if (pdfKeyHandler) { window.removeEventListener('keydown', pdfKeyHandler); pdfKeyHandler = null; }
+      otsRunId++;
+      if (otsWorker) { otsWorker.terminate(); otsWorker = null; }
+      if (otsPanel) {
+        otsLinks.textContent = '';
+        if (otsLog) otsLog.textContent = '';
+        if (otsB64) setOts('loading', 'waiting for document fetch...');
+      }
+
+      try {
+        log(`resolving ${storageKind === 'arweave' ? 'Arweave tx' : 'CID'}: ${cid}`);
+
+        let kind = null;        // 'doc' (pandoc-rendered markup) | 'pdf'
+        let docText = null;
+        let docFormat = null;
+        let pdfBlob = null;
+        let contentBytes = null; // exact fetched bytes, for OTS verification + download
+        let sourceName = null;  // best-effort original filename, for the download link
+        let gateway = GATEWAYS[0];
+        const imageMap = new Map();
+        let bibs = [];          // [{name, bytes}] of .bib files found alongside the doc
+
+        // Entry-source abstraction: the multi-file pipeline below reads
+        // sibling entries through this, so it works the same whether they
+        // come from an IPFS directory or an archive extracted in-browser.
+        let getEntry = null;    // (name, timeoutMs?) => Promise<Uint8Array>
+        let rawBytes = null;    // Arweave only: the exact stored payload (what OTS stamped)
+
+        let links = null;
+        if (storageKind === 'arweave') {
+          const r = await fetchFromArweave(cid);
+          rawBytes = r.bytes;
+          gateway = r.gateway;
+          if (looksLikeArchive(rawBytes)) {
+            log('archive payload — extracting in browser...');
+            const fileMap = await extractArchive(rawBytes, fileName || 'archive');
+            links = [...fileMap.keys()].map(Name => ({ Name }));
+            log(`archive extracted — ${links.length} entrie(s)`, 'ok');
+            getEntry = (name) => {
+              const b = fileMap.get(name);
+              return b ? Promise.resolve(b) : Promise.reject(new Error(`no such entry: ${name}`));
+            };
+          }
+        } else {
+          for (const gw of GATEWAYS) {
+            links = await listIPFSDir(cid, gw);
+            if (links) { gateway = gw; break; }
+          }
+          if (links) {
+            getEntry = async (name, timeoutMs = 10000) => {
+              const res = await fetch(gateway + cid + '/' + encodeURIComponent(name),
+                { signal: AbortSignal.timeout(timeoutMs) });
+              if (!res.ok) throw new Error(`${res.status}`);
+              return new Uint8Array(await res.arrayBuffer());
+            };
+          }
+        }
+
+        if (links) {
+          log(`directory detected - ${links.length} entries`, 'ok');
+
+          const docFiles   = links.filter(l => formatFromName(l.Name));
+          const pdfFiles   = links.filter(l => extOf(l.Name) === '.pdf');
+          const imageFiles = links.filter(l => IMAGE_EXTS.has(extOf(l.Name)));
+          const bibFiles   = links.filter(l => extOf(l.Name) === '.bib');
+
+          if (docFiles.length > 0) {
+            kind = 'doc';
+            if (docFiles.length > 1) log(`multiple document files - using: ${docFiles[0].Name}`, 'dim');
+
+            const docFile = docFiles[0];
+            docFormat = formatFromName(docFile.Name);
+            sourceName = docFile.Name;
+
+            log(`fetching ${docFile.Name} (${docFormat})...`);
+            contentBytes = await getEntry(docFile.Name).catch(e => {
+              throw new Error(`Failed to fetch document file: ${e.message}`);
+            });
+            docText = new TextDecoder().decode(contentBytes);
+
+            if (imageFiles.length > 0) {
+              log(`fetching ${imageFiles.length} image(s)...`);
+              await Promise.all(imageFiles.map(async f => {
+                try {
+                  const bytes = await getEntry(f.Name, 15000);
+                  const blob = new Blob([bytes], { type: IMAGE_MIME[extOf(f.Name)] || '' });
+                  imageMap.set(f.Name, URL.createObjectURL(blob));
+                  log(`  - ${f.Name}`, 'ok');
+                } catch (e) {
+                  log(`  x ${f.Name}: ${e.message}`, 'err');
+                }
+              }));
+            }
+
+            if (bibFiles.length > 0) {
+              log(`fetching ${bibFiles.length} bibliography file(s)...`);
+              bibs = (await Promise.all(bibFiles.map(async f => {
+                try {
+                  const bytes = await getEntry(f.Name);
+                  log(`  - ${f.Name}`, 'ok');
+                  return { name: f.Name, bytes };
+                } catch (e) {
+                  log(`  x ${f.Name}: ${e.message}`, 'err');
+                  return null;
+                }
+              }))).filter(Boolean);
+            }
+
+          } else if (pdfFiles.length > 0) {
+            kind = 'pdf';
+            if (pdfFiles.length > 1) log(`multiple PDFs - using: ${pdfFiles[0].Name}`, 'dim');
+
+            const pdfFile = pdfFiles[0];
+            sourceName = pdfFile.Name;
+            log(`fetching ${pdfFile.Name}...`);
+            contentBytes = await getEntry(pdfFile.Name, 20000).catch(e => {
+              throw new Error(`Failed to fetch PDF file: ${e.message}`);
+            });
+            pdfBlob = new Blob([contentBytes], { type: 'application/pdf' });
+
+          } else {
+            throw new Error('No supported document or PDF file found in directory (.org, .md, .rst, ..., .pdf)');
+          }
+
+        } else if (storageKind === 'arweave') {
+          // Single (non-archive) Arweave file: the payload is the document.
+          contentBytes = rawBytes;
+          if (isPdfMagic(rawBytes) || /\.pdf$/i.test(fileName)) {
+            kind = 'pdf';
+            pdfBlob = new Blob([contentBytes], { type: 'application/pdf' });
+            sourceName = fileName || (cid.slice(0, 12) + '.pdf');
+          } else {
+            kind = 'doc';
+            docText = new TextDecoder().decode(contentBytes);
+            docFormat = formatFromName(fileName) || 'org';
+            log(`assuming format: ${docFormat}`, 'dim');
+            sourceName = fileName || (cid.slice(0, 12) + (EXT_BY_FORMAT[docFormat] || '.txt'));
+          }
+
+        } else {
+          const result = await fetchFromIPFS(cid);
+          gateway = result.gateway;
+          kind = result.kind;
+          contentBytes = result.bytes;
+          if (kind === 'pdf') {
+            pdfBlob = new Blob([contentBytes], { type: 'application/pdf' });
+            sourceName = fileName || filenameHint(cid) || (cid.slice(0, 12) + '.pdf');
+          } else {
+            docText = new TextDecoder().decode(contentBytes);
+            // Bare single-file CIDs (Pinata pins) carry no filename, so the
+            // record's own fileName tag is the authoritative format hint —
+            // same rule as the Arweave branch. Only a hint-less record falls
+            // back to assuming org.
+            docFormat = formatFromName(fileName) || formatFromCidPath(cid) || 'org';
+            if (!formatFromName(fileName) && !formatFromCidPath(cid)) {
+              log(`assuming format: ${docFormat}`, 'dim');
+            }
+            sourceName = fileName || filenameHint(cid) || (cid.slice(0, 12) + (EXT_BY_FORMAT[docFormat] || '.txt'));
+          }
+        }
+
+        // Verify the OpenTimestamps proof in parallel with rendering; the
+        // result lands in the record-detail panel, progress in its own log.
+        // For Arweave the proof covers the stored payload as-is (archives
+        // included), so verify the raw fetched bytes — links: null keeps
+        // verifyRecordTimestamp on its direct-hash path with no IPFS lookups.
+        if (storageKind === 'arweave') {
+          verifyRecordTimestamp({
+            contentName: fileName || sourceName,
+            contentBytes: rawBytes,
+            links: null,
+            gateway: null,
+          }).catch(err => setOts('err', 'verification failed: ' + err.message));
+        } else {
+          verifyRecordTimestamp({ contentName: sourceName, contentBytes, links, gateway })
+            .catch(err => setOts('err', 'verification failed: ' + err.message));
+        }
+
+        // ── Convert (markup docs only — PDFs render directly) ─────
+        let html = null;
+        if (kind === 'doc') {
+          if (!pandocReady) await initPandoc();
+
+          log(`converting ${docFormat} -> html via pandoc WASM${bibs.length ? ' (+citeproc)' : ''}...`);
+          html = await convertDoc(protectEscapedDollars(docText), docFormat, bibs);
+          html = restoreEscapedDollars(html);
+        }
+
+        log('rendering output', 'ok');
+        setStatus('rendered', 'ready');
+
+        logEl.innerHTML = '';
+
+        const badge = document.createElement('div');
+        badge.className = 'gentou-source-badge';
+        const badgeLabel = document.createElement('span');
+        badgeLabel.className = 'gentou-source-badge-label';
+        const badgeUri = (storageKind === 'arweave' ? 'ar://' : 'ipfs://') + cid;
+        badgeLabel.textContent = badgeUri;
+        badgeLabel.title = badgeUri;
+        badge.appendChild(badgeLabel);
+        frame.insertBefore(badge, logEl);
+
+        // Offer the source for download. For an Arweave archive that means
+        // the original payload — the exact bytes the OTS proof covers — not
+        // the entry extracted from it (addDownloadLink keeps only one URL).
+        if (storageKind === 'arweave' && rawBytes !== contentBytes) {
+          addDownloadLink(new Blob([rawBytes]), fileName || (cid.slice(0, 12) + '.zip'), badge);
+        } else {
+          // PDF as-is; markup as plain text.
+          const sourceBlob = kind === 'pdf' ? pdfBlob : new Blob([contentBytes], { type: 'text/plain;charset=utf-8' });
+          addDownloadLink(sourceBlob, sourceName, badge);
+        }
+
+        if (kind === 'pdf') {
+          const viewer = document.createElement('div');
+          viewer.className = 'gentou-pdf-viewer';
+          frame.insertBefore(viewer, logEl);
+          await renderPDF(pdfBlob, viewer);
+
+        } else {
+          const DOMPurify = await getPurifier();
+          const prose = document.createElement('div');
+          prose.className = 'gentou-prose';
+          prose.innerHTML = DOMPurify.sanitize(html, purifyConfig);
+          rewriteImageSrcs(prose, imageMap);
+          frame.insertBefore(prose, logEl);
+
+          // window.MathJax is replaced by the full API once the loader
+          // script has run — before that (or if the CDN failed) it is
+          // still the bare config object with no `startup`, so skip math.
+          if (window.MathJax?.startup) {
+            await MathJax.startup.promise;
+            // Previous run's prose element was removed above; drop
+            // MathJax's internal references to it before re-typesetting.
+            MathJax.typesetClear();
+            await MathJax.typesetPromise([prose])
+              .catch(e => log(`mathjax: ${e.message}`, 'err'));
+          }
+
+          // Hook for the on-device AI summary (local-ai.js).
+          document.dispatchEvent(new CustomEvent('gentou:rendered', { detail: { kind } }));
+        }
+      } catch (e) {
+        if (e instanceof PendingTx) {
+          setStatus('pending', 'loading');
+          log(e.message, 'err');
+          log('L1 txs mine in ~2 minutes; bundled (free) uploads can take tens of minutes to settle — press retry later.', 'dim');
+          if (otsPanel && otsB64) setOts('dim', 'waiting for the Arweave transaction to settle');
+        } else {
+          setStatus('error', 'error');
+          log(e.message, 'err');
+        }
+      } finally {
+        retryBtn.disabled = false;
+      }
+    }
+
+    retryBtn.addEventListener('click', run);
+    run();
+  })();
+  </script>
+</section>

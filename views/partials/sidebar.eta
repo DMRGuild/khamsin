@@ -1,0 +1,29 @@
+<%/* Document-list shell. The listing itself is rendered client-side by
+     /static/js/records.js: it queries the relays (kind 1063 + kind 5) and
+     the authors' PDSes, verifies signatures, applies the tag filter, groups
+     by author, and emits rows with the exact DOM contract documented in
+     partials/record.eta. This <aside> must exist in the server HTML so
+     blackboard's `body:has(.doc-sidebar)` layout applies from first paint. */%>
+<aside class="doc-sidebar"<% if (it.currentDid) { %> data-current-did="<%= it.currentDid %>"<% } %><% if (it.currentRkey) { %> data-current-rkey="<%= it.currentRkey %>"<% } %>>
+  <h2>Published Documents</h2>
+  <%/* Distributed-fetch loader (styles in the layout's base CSS). records.js
+       removes it on success or swaps it for a plain .muted line on failure.
+       The .muted class rides along so skins place it like other status
+       lines (blackboard spans it across the spreadsheet columns). */%>
+  <div class="muted von-loader" id="doc-list-status" role="status">
+    <span class="von-loader-label">fetching from the distributed archive</span>
+    <span class="von-loader-net" aria-hidden="true"><i class="von-loader-node"></i><i class="von-loader-node"></i><i class="von-loader-node"></i><i class="von-loader-node"></i><i class="von-loader-node"></i><span class="von-loader-pulse"></span></span>
+    <span class="von-loader-log" aria-hidden="true"><i>dialing nostr relays&hellip;</i><i>resolving author PDSes&hellip;</i><i>verifying signatures&hellip;</i><i>collating records&hellip;</i></span>
+  </div>
+</aside>
+<%/* Zap-total badges (records.js appends them after rendering the list).
+     Styled via skin CSS variables only. */%>
+<style>
+  .zap-badge {
+    font-family: var(--mono);
+    font-size: 0.68rem;
+    color: var(--accent);
+    white-space: nowrap;
+    margin-left: 0.4rem;
+  }
+</style>

@@ -1,0 +1,46 @@
+name = "khamsin"
+main = "src/index.ts"
+compatibility_date = "2026-05-01"
+compatibility_flags = ["nodejs_compat"]
+workers_dev = true
+
+# Applies to npm scripts AND direct `npx wrangler dev/deploy` invocations.
+[build]
+command = "npm run build:templates"
+watch_dir = "views"
+
+[assets]
+directory = "./public"
+binding = "ASSETS"
+
+[[kv_namespaces]]
+binding = "VON_KV"
+# Local development works without an ID. Before production deployment, run
+# `npx wrangler kv namespace create VON_KV` and put its ID here.
+# id = "YOUR_KV_NAMESPACE_ID"
+
+# Optional uncompressed pandoc fallback; normal viewing uses the bundled gzip.
+# [[r2_buckets]]
+# binding = "GENTOU_BUCKET"
+# bucket_name = "khamsin-gentou"
+
+[[rules]]
+type = "Text"
+globs = ["**/*.css"]
+fallthrough = true
+
+[vars]
+# Set to your public HTTPS origin before deployment. Local setup overrides it.
+BASE_URL = "http://localhost:8787"
+SITE_NAME = "Khamsin"
+SITE_DESCRIPTION = "A browser-first document archive."
+SKIN = "blackboard"
+LEXICON_COLLECTION = "document.yokohama.dmrg"
+NOSTR_RELAYS = "wss://relay.primal.net,wss://nos.lol,wss://relay.damus.io"
+NOSTR_CHALLENGE_TTL_MS = "300000"
+ARWEAVE_GATEWAY = "https://arweave.net"
+OTS_CALENDARS = "https://a.pool.opentimestamps.org,https://b.pool.opentimestamps.org,https://alice.btc.calendar.opentimestamps.org"
+FORCE_ALLOW_TAGLESS = "1"
+DISABLE_ZAPS = "1"
+ENABLE_PINATA = "0"
+PIN_MAX_FILE_BYTES = "67108864"

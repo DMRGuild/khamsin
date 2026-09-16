@@ -1,0 +1,413 @@
+/* DIRECTION CONTRACT
+   THESIS: the archive is a typescript on autumn paper — a calm, antique,
+   typography-first reading room in daylight. Refuses both the dark-terminal
+   look and the white/system-sans preprint default.
+   OWN-WORLD: warm ivory paper and espresso ink; Iowan Old Style/Alegreya for
+   prose, Alegreya SC (true small caps, never uppercase mono) for labels and
+   controls; Courier
+   Prime strictly for data — CIDs, years, logs, sats; russet (autumn) links
+   and a coffee-ink primary button; printer's ornaments as the only decoration
+   (❧ fleuron in the wire strip, ☞ manicule on the open document); double
+   rules, hairlines, no shadows, no cards where a rule will do.
+   STORY: a reader unfolds the morning dispatch — masthead, wire strip of new
+   arrivals, typed contents column left, long comfortable reading right.
+   FIRST VIEWPORT: fleuron wire strip; centered masthead over a double rule;
+   small-caps contents index left; the reading column on continuous paper.
+   FORM: brief-pinned world (paper/ink/typewriter/autumn/coffee, light theme,
+   mono = data only) — a user pin beats the roll, so no concept seed was run. */
+
+@import url('https://fonts.googleapis.com/css2?family=Alegreya:ital,wght@0,400;0,500;0,600;0,700;1,400;1,600&family=Alegreya+SC:wght@400;500;700&family=Courier+Prime:ital,wght@0,400;0,700;1,400&family=Gowun+Batang:wght@400;700&family=Noto+Serif+JP:wght@400;500;600;700&display=swap');
+
+/* Eulyoo1945 — the serif Hangul reading face (same build blackboard uses).
+   Ships 400/600 only; 700 requests resolve to the real 600. Gowun Batang
+   stays behind it purely as a coverage backstop for rare syllables — its
+   subsets never download while Eulyoo has the glyph. */
+@font-face {
+  font-family: "Eulyoo1945";
+  src: url("https://cdn.jsdelivr.net/gh/0xd669/eulyoo1945@main/Eulyoo1945-Regular.woff2") format("woff2");
+  font-weight: 400;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Eulyoo1945";
+  src: url("https://cdn.jsdelivr.net/gh/0xd669/eulyoo1945@main/Eulyoo1945-SemiBold.woff2") format("woff2");
+  font-weight: 600;
+  font-display: swap;
+}
+
+/* ── Palette: autumn paper, espresso ink, russet, coffee ── */
+:root {
+  color-scheme: light;
+  --bg:        #F4EFE3;
+  --bg-raised: #FBF8EF;
+  --bg-hover:  #EAE2CF;
+  --border:    #DACDB2;
+  --border-hi: #BCAC8C;
+  --text:      #2B2118;
+  --text-muted:#6F6046;
+  --text-dim:  #A6997C;
+  --accent:    #96421C;
+  --accent-dim:#EDDFC6;
+  --red:       #9C2413;
+  --red-dim:   #F0D8CD;
+  /* Per-glyph fallback order: Latin → Iowan Old Style/Alegreya; Japanese kanji/kana → the
+     mincho chain (Kozuka first for those who have Adobe fonts installed,
+     then macOS/Windows system minchos, then the Noto Serif JP webfont as
+     the guarantee — none of these carry Hangul); Hangul → Eulyoo1945,
+     with Gowun Batang as the rare-syllable backstop. */
+  --jp-serif:  "Kozuka Mincho Pr6N", "Kozuka Mincho Pro", "Hiragino Mincho ProN",
+               "Yu Mincho", "Noto Serif JP";
+  --kr-serif:  "Eulyoo1945", "Gowun Batang";
+  /* Latin: Iowan Old Style where installed (Apple platforms), otherwise
+     Alegreya — the same Venetian old-style formality as a webfont. */
+  --serif:     "Iowan Old Style", "Alegreya", var(--jp-serif), var(--kr-serif),
+               Georgia, "Times New Roman", serif;
+  /* true small caps for labels and legends — the antique register that
+     replaces the base's uppercase mono */
+  --sc:        "Alegreya SC", "Iowan Old Style", "Alegreya", var(--jp-serif),
+               var(--kr-serif), Georgia, serif;
+  /* the typewriter voice, reserved for data: CIDs, years, logs, sats */
+  --mono:      "Courier Prime", var(--jp-serif), var(--kr-serif),
+               "Noto Sans KR", monospace;
+  --sans:      "Iowan Old Style", "Alegreya", var(--jp-serif), var(--kr-serif),
+               Georgia, "Times New Roman", serif;
+}
+
+/* the base layout pins dark; this world is daylight */
+html { color-scheme: light; }
+
+body {
+  font-family: var(--serif);
+  font-weight: 400;
+  font-size: 1rem;
+  line-height: 1.7;
+  max-width: 47rem;
+}
+::selection { background: rgba(150, 66, 28, 0.16); }
+
+a:focus-visible, button:focus-visible, summary:focus-visible,
+input[type="file"]:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
+/* ── Masthead ───────────────────────────────────── */
+.site-header {
+  text-align: center;
+  gap: 0.1rem;
+  padding-bottom: 1rem;
+  border-bottom: 4px double var(--border-hi);
+  margin-bottom: 2rem;
+}
+.site-header h1 {
+  font-family: var(--serif);
+  font-weight: 700;
+  font-size: 1.9rem;
+  letter-spacing: 0.01em;
+}
+.site-header h1 a { color: var(--text); }
+.site-header h1 a::before { content: none; }
+.site-header p {
+  font-family: var(--serif);
+  font-style: italic;
+  font-size: 0.95rem;
+  color: var(--text-muted);
+}
+
+/* ── Ticker → the wire strip ────────────────────── */
+/* New arrivals as a quiet dispatch line: paper band, hairline rules, a
+   fleuron before each title in place of the market arrows. */
+.ticker-tape {
+  background: #EFE8D6;
+  border-bottom: 1px solid var(--border);
+  font-family: var(--serif);
+  font-size: 0.85rem;
+}
+.ticker-item { color: var(--text-muted); padding: 0.5rem 1.15rem; }
+.ticker-item::before {
+  content: "❧" / "";
+  color: var(--accent);
+  opacity: 0.75;
+  font-size: 0.9em;
+}
+.ticker-symbol { display: none; }
+.ticker-item + .ticker-item { border-left: none; }
+.ticker-item:hover {
+  color: var(--text);
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--accent) 50%, transparent);
+  text-underline-offset: 3px;
+}
+
+/* ── Small-caps register: everything the base sets in uppercase mono ── */
+label,
+.storage-selector legend, .tag-selector legend,
+dt,
+summary,
+.doc-sidebar > h2,
+.ai-summary h3 {
+  font-family: var(--sc);
+  text-transform: none;
+  letter-spacing: 0.06em;
+  font-weight: 400;
+}
+label { font-size: 0.85rem; }
+dt { font-size: 0.8rem; margin-top: 0.55rem; }
+summary { font-size: 0.9rem; }
+.storage-selector legend, .tag-selector legend { font-size: 0.8rem; }
+.ai-summary h3 { font-size: 0.82rem; color: var(--text-muted); }
+
+/* ── The desk: contents column + reading column ── */
+body:has(.doc-sidebar) {
+  max-width: none;
+  margin: 0;
+  padding: 0;
+  /* flex column so the desk grid can stretch to the window bottom and the
+     contents column's tint never stops short */
+  display: flex;
+  flex-direction: column;
+  min-height: 100dvh;
+}
+body:has(.doc-sidebar) .layout { flex: 1; }
+body:has(.doc-sidebar) .site-header {
+  margin: 0 0 0;
+  padding: 1.4rem 2rem 1.1rem;
+}
+body:has(.doc-sidebar) .ticker-tape {
+  width: 100%;
+  margin: 0;
+}
+.layout:has(.side-col) {
+  display: grid;
+  grid-template-columns: [contents] clamp(19rem, 27vw, 24rem) [reading] 1fr;
+}
+.side-col {
+  grid-column: contents;
+  grid-row: 1;
+  position: sticky;
+  top: 0;
+  max-height: 100vh;
+  overflow-y: auto;
+  border-right: 1px solid var(--border);
+  padding: 1.6rem 1.5rem 3rem;
+  background: #F1EBDB;
+}
+.side-col .muted { font-style: normal; }
+.layout:has(.side-col) .main-pane {
+  grid-column: reading;
+  grid-row: 1;
+  min-width: 0;
+  max-width: 44rem;
+  margin-inline: auto;
+  padding: 2.75rem 3rem 5rem;
+}
+
+/* ── Reading column ─────────────────────────────── */
+.main-pane {
+  font-family: var(--serif);
+  font-size: 1.08rem;
+  line-height: 1.75;
+}
+main.main-pane h1, main.main-pane h2, main.main-pane h3,
+main.main-pane h4, main.main-pane h5, main.main-pane h6 {
+  font-family: var(--serif);
+}
+.main-pane h2 { font-size: 1.25rem; font-weight: 600; }
+.main-pane h3 { font-size: 1.05rem; font-weight: 600; }
+.record-detail h2 {
+  font-size: 1.55rem;
+  font-weight: 600;
+  line-height: 1.3;
+}
+/* Iowan Old Style and Alegreya carry true italics; Eulyoo1945 has none —
+   keep Korean upright instead of a synthesized oblique. */
+.record-detail .description { font-style: italic; font-synthesis-style: none; }
+.main-pane a {
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--accent) 40%, transparent);
+  text-underline-offset: 2.5px;
+}
+.main-pane a:hover { text-decoration-color: var(--accent); }
+
+hr { border-top: 4px double var(--border-hi); }
+
+/* the base hardcodes a blue-grey for pre — on paper it is ink */
+pre { color: var(--text); }
+code { font-weight: 400; }
+
+/* ── The contents index (document sidebar) ──────── */
+.doc-sidebar > h2 {
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  padding-bottom: 0.45rem;
+  margin-bottom: 0.55rem;
+  border-bottom: 1px solid var(--border-hi);
+}
+.doc-sidebar .record {
+  display: grid;
+  grid-template-columns: [body] 1fr [year] auto;
+  column-gap: 0.7rem;
+  align-items: baseline;
+  border: none;
+  background: none;
+  border-radius: 0;
+  padding: 0.42rem 0.2rem;
+  margin: 0;
+}
+.doc-sidebar .record:hover {
+  border: none;
+  background: rgba(150, 66, 28, 0.05);
+}
+.doc-sidebar .record-author {
+  grid-column: body;
+  grid-row: 1;
+  font-family: var(--sc);
+  font-size: 0.8rem;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+}
+.doc-sidebar .record-author a { color: var(--text-muted); }
+.doc-sidebar .record-author a:hover { color: var(--accent); }
+.doc-sidebar .record-date {
+  grid-column: year;
+  grid-row: 1;
+  font-family: var(--mono);
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  text-align: right;
+}
+.doc-sidebar .record-heading {
+  grid-column: body / -1;
+  grid-row: 2;
+  margin: 0.05rem 0 0;
+  font-size: 0.95rem;
+  font-weight: 500;
+  line-height: 1.45;
+}
+.doc-sidebar .record-heading a { color: var(--text); }
+.doc-sidebar .record-heading a:hover { color: var(--accent); }
+/* the open document gets the printer's fist */
+.doc-sidebar .record-title-link[aria-current="page"] {
+  font-weight: 700;
+  color: var(--text);
+}
+.doc-sidebar .record-title-link[aria-current="page"]::before {
+  content: "☞ " / "";
+  color: var(--accent);
+  font-weight: 400;
+}
+/* deletion is offered on the record page; the index stays terse */
+.doc-sidebar .record-delete { display: none; }
+
+/* ── Letterpress controls ───────────────────────── */
+button {
+  font-family: var(--sc);
+  letter-spacing: 0.06em;
+  font-size: 0.88rem;
+  border-radius: 2px;
+  border-color: var(--border-hi);
+  transition: background 0.12s, border-color 0.12s, color 0.12s;
+}
+/* the primary action is stamped in ink, not colored */
+button[type="submit"], .btn-primary {
+  background: var(--text);
+  border-color: var(--text);
+  color: #F8F3E5;
+  /* Alegreya SC ships 400/500/700 — 700 hits a real weight */
+  font-weight: 700;
+}
+button[type="submit"]:hover, .btn-primary:hover {
+  background: #4A3626;
+  border-color: #4A3626;
+}
+.btn-danger { border-radius: 2px; }
+.side-col .login-section button[type="submit"] {
+  background: var(--bg-raised);
+  border-color: var(--border-hi);
+  color: var(--text);
+  font-weight: 400;
+}
+.side-col .login-section button[type="submit"]:hover {
+  background: var(--bg-hover);
+  border-color: var(--text-muted);
+}
+
+input[type="text"], textarea {
+  font-family: var(--serif);
+  border-radius: 2px;
+  background: #FCFAF2;
+}
+input::placeholder, textarea::placeholder { color: var(--text-muted); opacity: 1; }
+.storage-selector, .tag-selector { border-radius: 2px; }
+.storage-option, .tag-option { font-family: var(--serif); }
+
+/* base sets these to sans; the room speaks serif */
+.user-bar, .back-nav { font-family: var(--serif); }
+dd { font-size: 0.95rem; }
+.record-date { font-family: var(--mono); }
+
+/* ── Cards → notes in the margin ────────────────── */
+.record, .ai-summary {
+  border-radius: 2px;
+}
+.ai-summary { background: #F1EBDB; }
+
+/* ── The mono rule, extended into the deep panels ──
+   Partial styles are injected after this sheet, so these overrides carry
+   one extra ancestor class to win on specificity. Mono survives only where
+   the content is data: CIDs, years, sats, logs, page numbers, terminal. */
+.main-pane .gentou-prose h1, .main-pane .gentou-prose h2,
+.main-pane .gentou-prose h3, .main-pane .gentou-prose h4 {
+  font-family: var(--serif);
+  font-weight: 600;
+}
+.main-pane .gentou-prose th { font-family: var(--sc); text-transform: none; letter-spacing: 0.05em; }
+.main-pane .gentou-viewer-header h3 { font-family: var(--sc); text-transform: none; letter-spacing: 0.06em; }
+.main-pane .gentou-retry-btn,
+.main-pane .gentou-download-link {
+  font-family: var(--sc);
+  text-transform: none;
+  letter-spacing: 0.05em;
+  border-radius: 2px;
+}
+.main-pane .gentou-pdf-toolbar { font-family: var(--sc); border-radius: 2px; }
+.main-pane .gentou-pdf-page-input, .main-pane .gentou-pdf-page-indicator,
+.main-pane .gentou-pdf-zoom-level { font-family: var(--mono); }
+/* the source badge's LED glow is the world's one shadow leak — flatten it */
+.main-pane .gentou-source-badge::before { box-shadow: none; }
+
+.main-pane .tipjar { font-family: var(--serif); font-size: 0.85rem; }
+.main-pane .tipjar .tipjar-btn {
+  font-family: var(--sc);
+  font-size: 0.78rem;
+  letter-spacing: 0.05em;
+  border-radius: 2px;
+}
+.main-pane .tipjar-form input, .main-pane .tipjar-usd { font-family: var(--mono); }
+.side-col .ipfs-fee-panel { font-family: var(--serif); font-size: 0.85rem; }
+.arweave-help, .arweave-status { font-family: var(--serif); font-size: 0.82rem; }
+
+/* base radii leak: 2px letterpress cut everywhere the world owns */
+pre, code, .btn-small { border-radius: 2px; }
+.main-pane .gentou-prose img { border-radius: 2px; }
+
+/* ── Stack when squarish/tall OR narrow (landscape phones included);
+     reading first, contents below ── */
+@media (max-aspect-ratio: 4/3), (max-width: 52rem) {
+  .layout:has(.side-col) { display: block; }
+  body:has(.doc-sidebar) .site-header { padding: 1.1rem 1.25rem 0.9rem; }
+  .layout:has(.side-col) .main-pane {
+    max-width: none;
+    margin: 0;
+    padding: 1.9rem 1.4rem 3rem;
+  }
+  .side-col {
+    position: static;
+    max-height: none;
+    overflow-y: visible;
+    border-right: none;
+    border-top: 1px solid var(--border);
+    padding: 1.5rem 1.25rem 3rem;
+  }
+}
