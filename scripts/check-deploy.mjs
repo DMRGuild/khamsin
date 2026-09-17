@@ -1,23 +1,23 @@
 import { existsSync, readFileSync } from 'node:fs';
+import { parse } from 'smol-toml';
 if (!existsSync(new URL('../wrangler.toml', import.meta.url))) {
   console.error('No personal wrangler.toml found. Run npm run setup -- --target remote.');
   process.exit(1);
 }
-const config = readFileSync(new URL('../wrangler.toml', import.meta.url), 'utf8');
-const base = config.match(/^\s*BASE_URL\s*=\s*"([^"]+)"/m)?.[1];
-function table(name) {
-  const lines = config.split(/\r?\n/);
-  const start = lines.findIndex(line => line.trim() === `[[${name}]]`);
-  if (start < 0) return undefined;
-  let end = start + 1;
-  while (end < lines.length && !lines[end].trim().startsWith('[')) end++;
-  return lines.slice(start + 1, end).join('\n');
+let config;
+try {
+  config = parse(readFileSync(new URL('../wrangler.toml', import.meta.url), 'utf8'));
+} catch (err) {
+  console.error(`Invalid wrangler.toml: ${err.message}`);
+  process.exit(1);
 }
-const kv = table('kv_namespaces');
-const d1 = table('d1_databases');
-const hasD1 = d1 && /^\s*database_id\s*=\s*"[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}"/m.test(d1)
-  && !d1.includes('00000000-0000-0000-0000-000000000000');
-const hasKv = kv && /^\s*id\s*=\s*"[a-f0-9]{32}"/m.test(kv);
+const base = config.vars?.BASE_URL;
+const kv = Array.isArray(config.kv_namespaces) ? config.kv_namespaces.find(row => row.binding === 'VON_KV') : undefined;
+const d1 = Array.isArray(config.d1_databases) ? config.d1_databases.find(row => row.binding === 'DB') : undefined;
+const hasD1 = d1 && typeof d1.database_id === 'string'
+  && /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(d1.database_id)
+  && d1.database_id !== '00000000-0000-0000-0000-000000000000';
+const hasKv = kv && typeof kv.id === 'string' && /^[a-f0-9]{32}$/i.test(kv.id);
 if (!base || !/^https:\/\//.test(base) || (d1 !== undefined ? !hasD1 || (kv !== undefined && !hasKv) : !hasKv)) {
   console.error('Set a public HTTPS BASE_URL and a valid DB database_id (or legacy VON_KV namespace id) in wrangler.toml before deploying. Remove an unused VON_KV block for D1-only deployments. See README.md.');
   process.exit(1);

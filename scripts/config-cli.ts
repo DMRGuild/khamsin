@@ -60,8 +60,13 @@ function d1Driver(target: string): SqlDriver {
   async function execute(statement: Statement) {
     const dir=mkdtempSync(join(tmpdir(),'khamsin-'));
     try {
-      const file=join(dir,'query.sql'); writeFileSync(file,sqlText(statement),{mode:0o600});
-      const output=JSON.parse(wrangler(['d1','execute','DB',`--${target}`,'--file',file,'--json']));
+      const sql=sqlText(statement);
+      const file=join(dir,'query.sql');
+      // Remote --file imports SQL and returns statistics, not SELECT/RETURNING rows.
+      // Keep local file execution so large local imports do not use argv.
+      if (target!=='remote') writeFileSync(file,sql,{mode:0o600});
+      const input=target==='remote' ? ['--command',sql] : ['--file',file];
+      const output=JSON.parse(wrangler(['d1','execute','DB',`--${target}`,...input,'--json']));
       if (!Array.isArray(output) || output.some(r=>r.success === false)) throw new Error('D1 query failed');
       return output.flatMap(r=>r.results || []);
     } finally { rmSync(dir,{recursive:true,force:true}); }
