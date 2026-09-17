@@ -71,7 +71,32 @@ function saveConfig(path:string, config:WranglerConfig, original:string|undefine
   writeFileSync(temporary,text,{mode:0o600}); renameSync(temporary,path);
 }
 
-export async function configureWrangler(args:{target:'local'|'remote';options:SetupOptions;ask?:Ask;run:Run;cwd?:string;log?:(message:string)=>void}):Promise<WranglerConfig> {
+export async function getWorkersSubdomain(accountId:string,run:Run,request:typeof fetch=fetch):Promise<string|undefined> {
+  validateAccount(accountId);
+  // Let Wrangler resolve and refresh OAuth/API credentials. Never log or persist
+  // this output, and do not expose credential-bearing errors to the caller.
+  try {
+    const auth=JSON.parse(run(['auth','token','--json']));
+    const headers:Record<string,string>={};
+    if (['oauth','api_token'].includes(auth.type) && typeof auth.token==='string' && auth.token) headers.Authorization=`Bearer ${auth.token}`;
+    else if (auth.type==='api_key' && typeof auth.key==='string' && typeof auth.email==='string' && auth.key && auth.email) {
+      headers['X-Auth-Key']=auth.key; headers['X-Auth-Email']=auth.email;
+    } else throw new Error('Unavailable credentials');
+    const response=await request(`https://api.cloudflare.com/client/v4/accounts/${accountId}/workers/subdomain`,{
+      headers,signal:AbortSignal.timeout(10_000),redirect:'error',
+    });
+    if (!response.ok) throw new Error('Subdomain request failed');
+    const body=await response.json() as {success?:boolean;result?:{subdomain?:unknown}};
+    if (body.success!==true) throw new Error('Subdomain request failed');
+    const subdomain=body.result?.subdomain;
+    if (typeof subdomain==='string' && /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i.test(subdomain)) return subdomain.toLowerCase();
+    return undefined;
+  } catch {
+    throw new Error('Could not retrieve the account workers.dev subdomain.');
+  }
+}
+
+export async function configureWrangler(args:{target:'local'|'remote';options:SetupOptions;ask?:Ask;run:Run;cwd?:string;log?:(message:string)=>void;request?:typeof fetch}):Promise<WranglerConfig> {
   const {target,options,ask,run}=args;
   const cwd=args.cwd || process.cwd(); const log=args.log || console.log;
   const path=join(cwd,'wrangler.toml');
@@ -89,8 +114,50 @@ export async function configureWrangler(args:{target:'local'|'remote';options:Se
     const value=supplied ?? (ask && prompt ? await ask(label,fallback,validate) : fallback);
     validate(value); return value;
   }
+  if (options['base-url']!==undefined) validateOrigin(options['base-url'],remote);
+  let accountId=options['account-id'] ?? config.account_id ?? process.env.CLOUDFLARE_ACCOUNT_ID;
+  if (accountId) validateAccount(accountId);
+  if (remote && !options['configure-only']) {
+    log('Connecting to Cloudflare. Setup may create D1 and a draft Worker for secrets; it does not deploy the application.');
+    let identity:{accounts:{id:string;name:string}[]};
+    try {identity=JSON.parse(run(['whoami','--json']));}
+    catch(err) {
+      if (!ask) throw new Error('Cloudflare authentication failed. Run npx wrangler login or provide CLOUDFLARE_API_TOKEN.');
+      const login=await ask('Open Cloudflare browser login? (y / n)','y',v=>{if(!['y','n'].includes(v)) throw new Error('Enter y or n.');});
+      if(login!=='y') throw err;
+      run(['login'],{interactive:true}); identity=JSON.parse(run(['whoami','--json']));
+    }
+    if (!identity.accounts?.length) throw new Error('No Cloudflare accounts are available. Check token permissions.');
+    if (!accountId) {
+      if(identity.accounts.length===1) accountId=identity.accounts[0].id;
+      else {
+        if (!ask) throw new Error('Multiple Cloudflare accounts are available. Specify --account-id.');
+        log(identity.accounts.map((a,i)=>`  ${i+1}  ${a.name} (${a.id})`).join('\n'));
+        const resolveAccount=(value:string)=>identity.accounts.find((a,i)=>value===String(i+1) || value===a.id)?.id;
+        const selected=await field('Cloudflare account (number or account ID)','',v=>{if(!resolveAccount(v)) throw new Error('Choose one of the listed accounts.');},undefined,true);
+        accountId=resolveAccount(selected);
+      }
+    }
+    if (!identity.accounts.some(a=>a.id===accountId)) throw new Error('Selected account is not available to these credentials.');
+    config.account_id=accountId;
+  }
+  const oldName=config.name;
   config.name=await field('Worker name',config.name,validateName,options.name);
-  config.vars.BASE_URL=(await field('Public URL (production: your workers.dev URL or custom domain)',originValid?config.vars.BASE_URL:(remote?'':'http://localhost:8787'),v=>validateOrigin(v,remote),options['base-url'])).replace(/\/$/,'');
+  let origin=originValid?config.vars.BASE_URL:(remote?'':'http://localhost:8787');
+  const renamedWorkersUrl=originValid && oldName!==config.name && new URL(origin).hostname.endsWith('.workers.dev');
+  if (remote && !options['configure-only'] && options['base-url']===undefined && (!originValid || renamedWorkersUrl)) {
+    // A previous Worker's URL is not a usable fallback after a rename.
+    if (renamedWorkersUrl) origin='';
+    try {
+      const subdomain=await getWorkersSubdomain(accountId as string,run,args.request);
+      if (subdomain && config.workers_dev!==false) origin=`https://${config.name}.${subdomain}.workers.dev`;
+      else log('No default workers.dev URL is available. Configure your account subdomain in Workers & Pages, or enter your public HTTPS URL.');
+    } catch {
+      log('Could not look up your workers.dev subdomain. Enter your public HTTPS URL manually (or use --base-url).');
+    }
+  }
+  if (remote && !origin && options['base-url']===undefined && !ask) throw new Error('Specify --base-url with your public HTTPS origin; no default URL is available.');
+  config.vars.BASE_URL=(await field('Public URL (production: your workers.dev URL or custom domain)',origin,v=>validateOrigin(v,remote),options['base-url'],edit || (remote && !origin))).replace(/\/$/,'');
   for (const key of ['SITE_NAME','SITE_DESCRIPTION','SKIN']) {
     config.vars[key]=await field(settings[key].label,String(config.vars[key]),settings[key].validate);
   }
@@ -123,8 +190,6 @@ export async function configureWrangler(args:{target:'local'|'remote';options:Se
   let dbId=options['database-id'] ?? oldDb?.database_id ?? LOCAL_DATABASE_ID;
   if (remote && oldDb && dbName!==oldDb.database_name && !options['database-id']) dbId=LOCAL_DATABASE_ID;
   if (!uuid.test(dbId)) throw new Error('Invalid D1 database UUID.');
-  let accountId=options['account-id'] ?? config.account_id ?? process.env.CLOUDFLARE_ACCOUNT_ID;
-  if (accountId) validateAccount(accountId);
   const legacy=bindings(config,'kv_namespaces').find(row=>row.binding==='VON_KV');
   if (legacy && (edit || (remote && !legacy.id))) {
     const keep=await field('Keep legacy VON_KV for migration? (y / n)',legacy.id || !remote?'y':'n',v=>{if(!['y','n'].includes(v)) throw new Error('Enter y or n.');},undefined,true);
@@ -134,25 +199,6 @@ export async function configureWrangler(args:{target:'local'|'remote';options:Se
     }
   }
   if (remote && !options['configure-only']) {
-    log('Connecting to Cloudflare. Setup may create D1 and a draft Worker for secrets; it does not deploy the application.');
-    let identity:{accounts:{id:string;name:string}[]};
-    try {identity=JSON.parse(run(['whoami','--json']));}
-    catch(err) {
-      if (!ask) throw new Error('Cloudflare authentication failed. Run npx wrangler login or provide CLOUDFLARE_API_TOKEN.');
-      const login=await ask('Open Cloudflare browser login? (y / n)','y',v=>{if(!['y','n'].includes(v)) throw new Error('Enter y or n.');});
-      if(login!=='y') throw err;
-      run(['login'],{interactive:true}); identity=JSON.parse(run(['whoami','--json']));
-    }
-    if (!identity.accounts?.length) throw new Error('No Cloudflare accounts are available. Check token permissions.');
-    if (!accountId) {
-      if(identity.accounts.length===1) accountId=identity.accounts[0].id;
-      else {
-        log(identity.accounts.map(a=>`  ${a.name}: ${a.id}`).join('\n'));
-        accountId=await field('Cloudflare account ID','',validateAccount,undefined,true);
-      }
-    }
-    if (!identity.accounts.some(a=>a.id===accountId)) throw new Error('Selected account is not available to these credentials.');
-    config.account_id=accountId;
     const env={CLOUDFLARE_ACCOUNT_ID:accountId as string};
     // Wrangler prioritizes account_id in its config over the environment.
     // Use an isolated account config until the chosen DB has been verified.

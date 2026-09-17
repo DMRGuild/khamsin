@@ -4,7 +4,7 @@ import { copyFileSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSyn
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { parse, stringify } from 'smol-toml';
-import { configureWrangler, ensureRemoteSecrets, LOCAL_DATABASE_ID, type Ask, type Run, type WranglerConfig } from '../scripts/wrangler-setup.ts';
+import { configureWrangler, ensureRemoteSecrets, getWorkersSubdomain, LOCAL_DATABASE_ID, type Ask, type Run, type WranglerConfig } from '../scripts/wrangler-setup.ts';
 
 const account='a'.repeat(32), database='bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
 function fixture() {
@@ -14,6 +14,144 @@ function fixture() {
 }
 const noNetwork:Run=()=>{throw new Error('Unexpected network operation');};
 const quiet=()=>{};
+const noRequest:typeof fetch=async()=>{throw new Error('Unexpected HTTP request');};
+
+test('remote login and account selection precede settings and supply the URL for the chosen Worker name',async()=>{
+  const f=fixture();
+  const selectedAccount='c'.repeat(32);
+  const events:string[]=[];
+  let loggedIn=false;
+  try {
+    const run:Run=(args,opts)=>{
+      events.push(args.slice(0,2).join(' '));
+      if(args[0]==='whoami') {
+        if(!loggedIn) throw new Error('Not logged in');
+        return JSON.stringify({accounts:[{id:account,name:'First account'},{id:selectedAccount,name:'Not the subdomain'}]});
+      }
+      if(args[0]==='login') {assert.equal(opts?.interactive,true); loggedIn=true; return '';}
+      if(args[0]==='auth') return JSON.stringify({type:'oauth',token:'test-token'});
+      assert.deepEqual(args.slice(0,3),['d1','list','--json']);
+      assert.equal(opts?.env?.CLOUDFLARE_ACCOUNT_ID,selectedAccount);
+      assert.equal((parse(readFileSync(args[args.length-1],'utf8')) as WranglerConfig).account_id,selectedAccount);
+      return JSON.stringify([{name:'maelstrom',uuid:database}]);
+    };
+    const ask:Ask=async(label,fallback,validate)=>{
+      events.push(label);
+      const answer=label.startsWith('Cloudflare account')?'2':label==='Worker name'?'maelstrom':fallback;
+      if(label.startsWith('Public URL')) assert.equal(fallback,'https://maelstrom.actual-subdomain.workers.dev');
+      validate?.(answer); return answer;
+    };
+    const request:typeof fetch=async(url,init)=>{
+      assert.equal(url,`https://api.cloudflare.com/client/v4/accounts/${selectedAccount}/workers/subdomain`);
+      assert.equal(new Headers(init?.headers).get('Authorization'),'Bearer test-token');
+      events.push('subdomain');
+      return Response.json({success:true,result:{subdomain:'actual-subdomain'}});
+    };
+    const config=await configureWrangler({cwd:f.cwd,target:'remote',options:{},run,ask,request,log:quiet});
+    assert.equal(config.vars.BASE_URL,'https://maelstrom.actual-subdomain.workers.dev');
+    assert.equal(config.account_id,selectedAccount);
+    assert.deepEqual(events.slice(0,6),['whoami --json','Open Cloudflare browser login? (y / n)','login','whoami --json','Cloudflare account (number or account ID)','Worker name']);
+    assert.ok(events.indexOf('subdomain')<events.findIndex(e=>e.startsWith('Public URL')));
+    assert.ok(events.findIndex(e=>e.startsWith('Public URL'))<events.indexOf('d1 list'));
+    assert.ok(!readFileSync(f.path,'utf8').includes('test-token'));
+  } finally {f.close();}
+});
+
+test('subdomain discovery supports Wrangler OAuth, API tokens and API key credentials',async()=>{
+  for (const auth of [{type:'oauth',token:'oauth-token'},{type:'api_token',token:'api-token'},{type:'api_key',key:'key',email:'user@example.com'}]) {
+    const run:Run=args=>{assert.deepEqual(args,['auth','token','--json']); return JSON.stringify(auth);};
+    const request:typeof fetch=async(_url,init)=>{
+      const headers=new Headers(init?.headers);
+      if(auth.type==='api_key') {
+        assert.equal(headers.get('X-Auth-Key'),auth.key);
+        assert.equal(headers.get('X-Auth-Email'),auth.email);
+        assert.equal(headers.get('Authorization'),null);
+      } else assert.equal(headers.get('Authorization'),`Bearer ${auth.token}`);
+      assert.ok(init?.signal);
+      assert.equal(init?.redirect,'error');
+      return Response.json({success:true,result:{subdomain:'my-account'}});
+    };
+    assert.equal(await getWorkersSubdomain(account,run,request),'my-account');
+  }
+  await assert.rejects(getWorkersSubdomain(account,()=>{throw new Error('sensitive-token');},noRequest),{
+    message:'Could not retrieve the account workers.dev subdomain.',
+  });
+});
+
+test('missing or inaccessible subdomains allow manual URL input without exposing API errors',async()=>{
+  for (const mode of ['missing','forbidden','network','malformed']) {
+    const f=fixture();
+    const logs:string[]=[];
+    try {
+      const run:Run=args=>args[0]==='whoami'?JSON.stringify({accounts:[{id:account,name:'A'}]}):
+        args[0]==='auth'?JSON.stringify({type:'api_token',token:'sensitive-token'}):JSON.stringify([{name:'khamsin',uuid:database}]);
+      const request:typeof fetch=async()=>{
+        if(mode==='network') throw new Error('sensitive-token');
+        if(mode==='forbidden') return Response.json({success:false,errors:[{message:'sensitive-token'}]},{status:403});
+        return Response.json({success:true,result:{subdomain:mode==='missing'?'':'bad/subdomain'}});
+      };
+      const ask:Ask=async(label,fallback,validate)=>{
+        const answer=label.startsWith('Public URL')?'https://archive.example':fallback;
+        validate?.(answer); return answer;
+      };
+      const config=await configureWrangler({cwd:f.cwd,target:'remote',options:{},run,request,ask,log:message=>logs.push(message)});
+      assert.equal(config.vars.BASE_URL,'https://archive.example');
+      assert.ok(logs.some(message=>/subdomain/.test(message)));
+      assert.ok(!logs.join('\n').includes('sensitive-token'));
+    } finally {f.close();}
+  }
+});
+
+test('remote URL defaults work unattended and follow renamed Workers while preserving custom or explicit origins',async()=>{
+  const f=fixture();
+  let lookups=0;
+  const run:Run=args=>{
+    if(args[0]==='whoami') return JSON.stringify({accounts:[{id:account,name:'A'}]});
+    if(args[0]==='auth') return JSON.stringify({type:'oauth',token:'test-token'});
+    return JSON.stringify([{name:'khamsin',uuid:database}]);
+  };
+  const request:typeof fetch=async()=>{lookups++; return Response.json({success:true,result:{subdomain:'my-account'}});};
+  try {
+    const setup=(options:Parameters<typeof configureWrangler>[0]['options'])=>configureWrangler({cwd:f.cwd,target:'remote',options,run,request,log:quiet});
+    assert.equal((await setup({})).vars.BASE_URL,'https://khamsin.my-account.workers.dev');
+    assert.equal((await setup({name:'maelstrom'})).vars.BASE_URL,'https://maelstrom.my-account.workers.dev');
+    assert.equal(lookups,2);
+    const before=readFileSync(f.path,'utf8');
+    await assert.rejects(configureWrangler({cwd:f.cwd,target:'remote',options:{name:'renamed'},run,request:noRequest,log:quiet}),/Specify --base-url/);
+    assert.equal(readFileSync(f.path,'utf8'),before);
+    await setup({}); // A normal rerun keeps the configured URL without a lookup.
+    assert.equal(lookups,2);
+    assert.equal((await setup({'base-url':'https://archive.example'})).vars.BASE_URL,'https://archive.example');
+    assert.equal((await setup({name:'another-worker'})).vars.BASE_URL,'https://archive.example');
+    assert.equal(lookups,2);
+  } finally {f.close();}
+});
+
+test('unattended setup without a discovered URL stops before provisioning or saving',async()=>{
+  const f=fixture();
+  try {
+    const run:Run=args=>{
+      if(args[0]==='whoami') return JSON.stringify({accounts:[{id:account,name:'A'}]});
+      assert.equal(args[0],'auth');
+      throw new Error('Credentials unavailable');
+    };
+    await assert.rejects(configureWrangler({cwd:f.cwd,target:'remote',options:{},run,request:noRequest,log:quiet}),/Specify --base-url/);
+    assert.equal(existsSync(f.path),false);
+  } finally {f.close();}
+});
+
+test('remote account selection does not guess when unattended or accept an unavailable account',async()=>{
+  const f=fixture();
+  try {
+    const run:Run=args=>{
+      assert.equal(args[0],'whoami');
+      return JSON.stringify({accounts:[{id:account,name:'A'},{id:'c'.repeat(32),name:'B'}]});
+    };
+    await assert.rejects(configureWrangler({cwd:f.cwd,target:'remote',options:{},run,request:noRequest,log:quiet}),/Specify --account-id/);
+    await assert.rejects(configureWrangler({cwd:f.cwd,target:'remote',options:{'account-id':'d'.repeat(32)},run,request:noRequest,log:quiet}),/not available/);
+    assert.equal(existsSync(f.path),false);
+  } finally {f.close();}
+});
 
 test('fresh local configuration is generated offline with all variables and no legacy KV',async()=>{
   const f=fixture();

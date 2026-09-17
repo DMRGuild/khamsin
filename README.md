@@ -100,9 +100,16 @@ npm run build
 npm run deploy
 ```
 
-Production setup prompts for your public HTTPS origin (workers.dev address or a
-custom domain), opens browser login if needed, selects your account, and finds
-D1 by ID/name or creates it. It writes the returned ID automatically, applies
+Production setup checks Cloudflare authentication first and opens browser login
+if needed. Select your account (by number if you have several), then enter the
+Worker name. Setup looks up the account's workers.dev subdomain and suggests
+`https://<worker-name>.<account-subdomain>.workers.dev` as the public URL; no Worker
+needs to exist beforehand. You can enter a custom domain instead. Existing custom
+URLs and explicit `--base-url` values are preserved. If the lookup fails or no
+subdomain is registered, setup asks for the URL manually (`--base-url` is required
+without a terminal). `--configure-only` stays offline and does not look up URLs.
+
+Setup then finds D1 by ID/name or creates it. It writes the returned ID automatically, applies
 migrations, and registers the administrator. It generates `COOKIE_SECRET` through
 Wrangler's stdin only when the Worker does not already have one. Existing secrets
 are preserved; failed permission/network checks are not treated as missing secrets.
