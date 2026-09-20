@@ -80,7 +80,7 @@ test('setup is repeatable and import previews never write configuration',()=>{
     copyFileSync('migrations/0001_store.sql',join(dir,'migrations/0001_store.sql'));
     const run=(args:string[],success=true)=>{
       const result=spawnSync(process.execPath,[resolve(root,'dist/config-cli.mjs'),...args],{
-        cwd:dir,encoding:'utf8',env:{...process.env,DATABASE_PATH:join(dir,'app.sqlite')},
+        cwd:dir,encoding:'utf8',env:{...process.env,PINATA_JWT:'test-pinata-jwt',DATABASE_PATH:join(dir,'app.sqlite')},
       });
       assert.equal(result.status===0,success,result.stdout+result.stderr);
       return result.stdout;
@@ -88,6 +88,8 @@ test('setup is repeatable and import previews never write configuration',()=>{
     run(['setup','--target','sqlite','--admin','nsec1not-a-public-key'],false);
     run(['setup','--target','sqlite','--admin','a'.repeat(64)]);
     const secret=readFileSync(join(dir,'.env'),'utf8');
+    assert.match(secret,/ENABLE_PINATA=1/);
+    assert.match(secret,/PINATA_JWT="test-pinata-jwt"/);
     assert.match(run(['setup','--target','sqlite','--admin','b'.repeat(64)]),/Already initialized/);
     assert.equal(readFileSync(join(dir,'.env'),'utf8'),secret);
     mkdirSync(join(dir,'input'));

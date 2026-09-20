@@ -1,9 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { copyFileSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { parse, stringify } from 'smol-toml';
+import { parseEnv } from 'node:util';
+import { configureLocalPinata } from '../scripts/pinata-setup.ts';
 import { configureWrangler, ensureRemoteSecrets, getWorkersSubdomain, LOCAL_DATABASE_ID, type Ask, type Run, type WranglerConfig } from '../scripts/wrangler-setup.ts';
 
 const account='a'.repeat(32), database='bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
@@ -269,4 +271,68 @@ test('Pinata setup uses hidden input or stdin and preserves existing tokens',()=
   ensureRemoteSecrets(config,run,quiet,{pinataToken:'replacement-must-not-be-used'});
   assert.equal(puts,1);
   assert.throws(()=>ensureRemoteSecrets(config,()=>JSON.stringify([{name:'COOKIE_SECRET'}]),quiet),/PINATA_JWT is missing/);
+});
+
+
+test('basic wizard recommends IPFS without advanced settings and supports explicit opt-out',async()=>{
+  for (const skip of [false,true]) {
+    const f=fixture();
+    const logs:string[]=[];
+    let prompts=0;
+    try {
+      const ask:Ask=async(label,fallback,validate)=>{
+        if (label.startsWith('Enable IPFS')) {
+          prompts++;
+          assert.equal(fallback,'1');
+          assert.ok(logs.some(line=>line.includes('https://app.pinata.cloud/keys')));
+        }
+        const answer=label.startsWith('Enable IPFS') && skip?'0':fallback;
+        validate?.(answer); return answer;
+      };
+      const config=await configureWrangler({cwd:f.cwd,target:'local',options:{},ask,run:noNetwork,log:line=>logs.push(line)});
+      assert.equal(prompts,1);
+      assert.equal(config.vars.ENABLE_PINATA,skip?'0':'1');
+      const again=await configureWrangler({cwd:f.cwd,target:'local',options:{},run:noNetwork,log:quiet});
+      assert.equal(again.vars.ENABLE_PINATA,config.vars.ENABLE_PINATA);
+    } finally {f.close();}
+  }
+});
+
+test('local IPFS requires a token, stores it privately and preserves existing secrets',async()=>{
+  const f=fixture();
+  const path=join(f.cwd,'.dev.vars');
+  try {
+    await assert.rejects(configureLocalPinata(path,{enabled:'1'}),/PINATA_JWT is missing/);
+    assert.equal(existsSync(path),false);
+    const original='# Keep this comment\nCOOKIE_SECRET=existing-secret\nPINATA_JWT=\n';
+    writeFileSync(path,original);
+    await configureLocalPinata(path,{enabled:'1',secret:async()=>'test-token'});
+    const saved=readFileSync(path,'utf8');
+    assert.ok(saved.startsWith(original));
+    assert.equal(parseEnv(saved).PINATA_JWT,'test-token');
+    assert.equal(parseEnv(saved).ENABLE_PINATA,'1');
+    assert.equal(statSync(path).mode & 0o777,0o600);
+    await configureLocalPinata(path,{enabled:'1',token:'do-not-replace',secret:async()=>{throw new Error('Unexpected prompt');}});
+    assert.equal(readFileSync(path,'utf8'),saved);
+    await configureLocalPinata(path,{enabled:'0'});
+    assert.equal(parseEnv(readFileSync(path,'utf8')).ENABLE_PINATA,'0');
+    assert.equal(parseEnv(readFileSync(path,'utf8')).PINATA_JWT,'test-token');
+  } finally {f.close();}
+});
+
+test('SQLite IPFS defaults on, supports skipping, and keeps existing disabled installations',async()=>{
+  const f=fixture();
+  const path=join(f.cwd,'.env');
+  try {
+    await configureLocalPinata(path,{supplied:'0',secret:async()=>{throw new Error('Unexpected prompt');}});
+    assert.equal(parseEnv(readFileSync(path,'utf8')).ENABLE_PINATA,'0');
+    await configureLocalPinata(path,{token:'unused'});
+    assert.equal(parseEnv(readFileSync(path,'utf8')).PINATA_JWT,undefined);
+    await configureLocalPinata(path,{reconfigure:true,ask:async(label,fallback)=>{assert.equal(fallback,'0'); return '1';},token:'new-token'});
+    assert.equal(parseEnv(readFileSync(path,'utf8')).ENABLE_PINATA,'1');
+    assert.equal(parseEnv(readFileSync(path,'utf8')).PINATA_JWT,'new-token');
+    const fresh=join(f.cwd,'fresh.env');
+    await configureLocalPinata(fresh,{token:'fresh-token'});
+    assert.equal(parseEnv(readFileSync(fresh,'utf8')).ENABLE_PINATA,'1');
+  } finally {f.close();}
 });

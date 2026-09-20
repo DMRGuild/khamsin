@@ -124,8 +124,8 @@ Wrangler에서 직접 관리합니다.
 도메인·workers.dev 사용 여부·선택적 기존 R2 버킷은 고급 설정에서 연결합니다.
 R2 버킷 생성과 선택적 WASM 업로드는 별도입니다. Pinata를 켰다면 운영 setup이
 Wrangler의 숨김 입력으로 토큰을 받습니다. 자동화에서는 `PINATA_JWT` 환경 변수로
-전달할 수 있으며 기존 토큰은 유지합니다. 로컬 개발 토큰은 제외된 `.dev.vars`에
-넣으세요.
+전달할 수 있으며 기존 토큰은 유지합니다. 로컬 setup은 토큰을 Git에서 제외된 `.dev.vars`(Workers) 또는 `.env`(SQLite)에
+소유자만 읽고 쓸 수 있는 권한으로 저장합니다.
 
 ## 리눅스 운영
 
@@ -209,8 +209,16 @@ JSON에는 운영 설정과 Pin 소유권이 포함되지만 환경 변수와 �
 검증합니다. D1 테스트는 localhost 포트를 사용합니다. 두 빌드 경로 모두 Eta
 템플릿과 CSS를 빌드 시 처리합니다.
 
-압축 Pandoc이 포함되어 R2는 선택 사항입니다. Pinata를 켜려면
-`ENABLE_PINATA=1`과 `PINATA_JWT`를 설정합니다. Arweave 업로드는 브라우저
+압축 Pandoc이 포함되어 R2는 선택 사항입니다. IPFS 업로드는 프로젝트 권장사항으로,
+새 setup에서는 Pinata 활성화가 기본값이며 JWT를 숨김 입력으로 받습니다.
+[Pinata](https://app.pinata.cloud/) 가입·로그인 후
+[API Keys](https://app.pinata.cloud/keys) → **New Key**에서 이름과 공개 파일
+업로드·삭제 권한을 지정해 키를 발급하세요. 발급 결과 중 **JWT**를 입력합니다
+(API Key·API Secret 쌍이 아닙니다). [공식 안내](https://docs.pinata.cloud/quickstart)도
+참고할 수 있습니다. 사용하지 않으려면 질문에 `0`을 입력하거나
+`--set ENABLE_PINATA=0`을 지정하세요. 자동화에서는 `PINATA_JWT` 환경 변수로
+전달합니다. `--configure-only`는 활성화 설정만 저장하며 토큰을 요구하지 않습니다.
+기존 설정은 유지되며 `--reconfigure`로 변경할 수 있습니다. Arweave 업로드는 브라우저
 지갑을 사용합니다. AT Protocol OAuth 로그인은 아직 지원하지 않습니다.
 커스텀 HTML은 직접 렌더링하므로 운영자가 신뢰하는 내용만 저장하세요.
 

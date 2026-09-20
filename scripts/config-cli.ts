@@ -5,6 +5,8 @@ import { spawnSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { createInterface } from 'node:readline/promises';
 import { parseArgs } from 'node:util';
+import { Writable } from 'node:stream';
+import { configureLocalPinata } from './pinata-setup.ts';
 import { openSqlite } from '../src/storage/sqlite.ts';
 import { normalizeIdentity } from '../src/storage/identity.ts';
 import { CUSTOM_SLOTS, type SqlDriver, type Statement } from '../src/storage/types.ts';
@@ -20,12 +22,17 @@ const {values,positionals} = parseArgs({allowPositionals:true,options:{
 }});
 const command = positionals[0];
 if (values.help || !command) {
-  console.log(`Khamsin configuration\n\n  npm run setup -- [--target local|sqlite|remote] [--admin npub1…] [--reconfigure] [--advanced]\n  npm run setup -- --target local --configure-only --defaults\n  Setup flags: --name, --base-url, --database-name, --database-id, --account-id, --set KEY=VALUE\n  npm run config:import -- --target local|sqlite|remote --from ./data [--apply]\n  npm run config:import -- --target local|sqlite|remote --from-kv [--apply]\n  npm run config:export -- --target local|sqlite|remote --output backup.json\n\nImports merge lists and preserve existing HTML/pins. --overwrite-html replaces matching HTML.\n--from accepts a data directory or a JSON export. --from-kv reads the same local/remote KV;\nwith target sqlite, it reads local KV. Imports preview by default. No setup files are required.`);
+  console.log(`Khamsin configuration\n\n  npm run setup -- [--target local|sqlite|remote] [--admin npub1…] [--reconfigure] [--advanced]\n  npm run setup -- --target local --configure-only --defaults\n  IPFS is recommended and enabled for new setups. Supply PINATA_JWT or enter it when prompted.\n  Skip IPFS with --set ENABLE_PINATA=0.\n  Setup flags: --name, --base-url, --database-name, --database-id, --account-id, --set KEY=VALUE\n  npm run config:import -- --target local|sqlite|remote --from ./data [--apply]\n  npm run config:import -- --target local|sqlite|remote --from-kv [--apply]\n  npm run config:export -- --target local|sqlite|remote --output backup.json\n\nImports merge lists and preserve existing HTML/pins. --overwrite-html replaces matching HTML.\n--from accepts a data directory or a JSON export. --from-kv reads the same local/remote KV;\nwith target sqlite, it reads local KV. Imports preview by default. No setup files are required.`);
   process.exit(0);
 }
 const color = process.stdout.isTTY && !process.env.NO_COLOR;
 const bold = (s:string) => color ? `\x1b[1;36m${s}\x1b[0m` : s;
-const rl = process.stdin.isTTY && !values.defaults ? createInterface({input:process.stdin,output:process.stdout}) : null;
+let hideInput=false;
+const promptOutput=new Writable({write(chunk,_encoding,callback) {
+  if (!hideInput) process.stdout.write(chunk);
+  callback();
+}});
+const rl = process.stdin.isTTY && !values.defaults ? createInterface({input:process.stdin,output:promptOutput,terminal:true}) : null;
 const ask: Ask | undefined = rl ? async (label, fallback, validate) => {
   while (true) {
     const answer = (await rl.question(`${label}${fallback ? ` [${fallback}]` : ''}: `)).trim() || fallback;
@@ -33,6 +40,17 @@ const ask: Ask | undefined = rl ? async (label, fallback, validate) => {
     catch (err) { console.log((err as Error).message); }
   }
 } : undefined;
+async function askPinataSecret():Promise<string> {
+  while (true) {
+    process.stdout.write('Pinata JWT (hidden input): ');
+    hideInput=true;
+    let value:string;
+    try {value=(await rl!.question('')).trim();}
+    finally {hideInput=false; process.stdout.write('\n');}
+    if (value) return value;
+    console.log('A JWT is required. To skip IPFS, rerun with --set ENABLE_PINATA=0.');
+  }
+}
 function wrangler(args: string[], capture = true, options: RunOptions = {}): string {
   if (options.interactive) rl?.pause();
   const result = spawnSync(process.execPath,['node_modules/wrangler/bin/wrangler.js',...args],{
@@ -144,8 +162,12 @@ async function main() {
     if (target==='remote' && setupConfig) ensureRemoteSecrets(setupConfig,run,console.log,{interactive:Boolean(rl),pinataToken:process.env.PINATA_JWT});
     if (target!=='remote') {
       const file=target==='sqlite' ? '.env' : '.dev.vars';
-      if (!existsSync(file)) writeFileSync(file,`BASE_URL=http://localhost:8787\nCOOKIE_SECRET=${randomBytes(32).toString('base64')}\n${target==='sqlite'?'SKIN=blackboard\nFORCE_ALLOW_TAGLESS=1\nDISABLE_ZAPS=1\n':''}`,{flag:'wx',mode:0o600});
-      console.log(`✓ ${file} ready (existing files preserved).`);
+      const fresh=!existsSync(file);
+      await configureLocalPinata(file,{enabled:setupConfig?.vars.ENABLE_PINATA,
+        supplied:values.set?.filter(value=>value.startsWith('ENABLE_PINATA=')).at(-1)?.slice('ENABLE_PINATA='.length),
+        reconfigure:values.reconfigure || fresh,token:process.env.PINATA_JWT,ask,secret:rl?askPinataSecret:undefined});
+      if (fresh) writeFileSync(file,`BASE_URL=http://localhost:8787\nCOOKIE_SECRET=${randomBytes(32).toString('base64')}\n${target==='sqlite'?'SKIN=blackboard\nFORCE_ALLOW_TAGLESS=1\nDISABLE_ZAPS=1\n':''}${readFileSync(file,'utf8')}`,{mode:0o600});
+      console.log(`✓ ${file} ready (existing secrets preserved).`);
     }
     console.log('\n'+bold('Ready'));
     console.log(target==='sqlite' ? '  npm run build:node\n  npm start' : target==='local' ? '  npm run dev' : '  npm run deploy');

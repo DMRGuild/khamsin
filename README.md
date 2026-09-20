@@ -23,7 +23,9 @@ The setup wizard asks for the environment and your **public Nostr key** (`npub`
 or 64-character hex). For Workers, it also configures your Worker name, public
 URL, site name/description, skin, and D1 connection. Press Enter to accept defaults. Never enter an `nsec` private key. It creates the database,
 registers the administrator and access permission together, and generates a
-local cookie secret. Re-running setup preserves the existing administrator,
+local cookie secret. New setups recommend and enable IPFS uploads via Pinata,
+asking for a JWT with hidden input. Choose `0` at the IPFS prompt, or pass
+`--set ENABLE_PINATA=0`, to skip. Re-running setup preserves the existing administrator,
 data, and secrets. No manual list editing or seeding is required.
 
 Choose **Cloudflare local** and then run:
@@ -131,13 +133,14 @@ Custom domains and workers.dev availability are configurable under advanced
 settings. The optional R2 setting connects an **existing** bucket; create/upload
 its optional fallback asset as described below. If Pinata is enabled, production
 setup prompts for its token using Wrangler's hidden input (or reads `PINATA_JWT`
-from the process environment in automation). Existing tokens are preserved. For
-local development, put the token in the ignored `.dev.vars` file.
+from the process environment in automation). Existing tokens are preserved. Local setup stores the token in the ignored `.dev.vars` (Workers) or `.env`
+(SQLite) file with owner-only permissions.
 
 ## Run on a Linux server
 
 `npm start` loads `.env` if present; existing process environment variables take
-precedence. Local setup writes `.env` only if it does not exist.
+precedence. Local setup preserves existing secrets in `.env`; `--reconfigure` lets you change
+the IPFS setting.
 
 - `DATABASE_PATH`: defaults to `.state/khamsin.sqlite`. Use a persistent local
   path such as `/var/lib/khamsin/khamsin.sqlite`, writable by the service user.
@@ -230,9 +233,17 @@ Eta templates and CSS are bundled at build time for both runtimes.
 
 ## Optional storage
 
-Arweave uploads run in the browser using a Wander wallet. Pinata is disabled
-by default. To enable it, set `ENABLE_PINATA="1"`, run
-`npx wrangler secret put PINATA_JWT`, and redeploy. Pinata unpin requests are
+Arweave uploads run in the browser using a Wander wallet. IPFS uploads via
+Pinata are recommended and enabled by default in new setups.
+Sign up at [Pinata](https://app.pinata.cloud/), open
+[API Keys](https://app.pinata.cloud/keys) → **New Key**, name the key and allow
+public file uploads and deletion. Copy the **JWT** into the setup prompt;
+Khamsin uses `PINATA_JWT`, not the API Key / API Secret pair.
+See the [Pinata guide](https://docs.pinata.cloud/quickstart).
+For unattended setup, supply the `PINATA_JWT` environment variable, or skip
+with `--set ENABLE_PINATA=0`. `--configure-only` saves the setting without
+requesting or storing a token. Existing installations keep their setting;
+use `--reconfigure` to enable IPFS, then redeploy for production. Pinata unpin requests are
 limited to the uploader registered in the database.
 
 The bundled `public/gentou/pandoc.wasm.gz` is sufficient for normal viewing.

@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomBytes } from 'node:crypto';
 import { parse, stringify } from 'smol-toml';
+import { pinataGuide, selectPinata } from './pinata-setup.ts';
 
 export const LOCAL_DATABASE_ID = '00000000-0000-0000-0000-000000000000';
 const uuid = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i;
@@ -161,10 +162,12 @@ export async function configureWrangler(args:{target:'local'|'remote';options:Se
   for (const key of ['SITE_NAME','SITE_DESCRIPTION','SKIN']) {
     config.vars[key]=await field(settings[key].label,String(config.vars[key]),settings[key].validate);
   }
+  const pinataOverride=options.set?.filter(value=>value.startsWith('ENABLE_PINATA=')).at(-1)?.slice('ENABLE_PINATA='.length);
+  if (edit || options.advanced) config.vars.ENABLE_PINATA=await selectPinata(!original || original.startsWith('# Tracked template.') ? undefined : config.vars.ENABLE_PINATA,pinataOverride,ask,log);
   const advanced=options.advanced || (ask && edit && await field('Review advanced settings? (y / n)','n',v=>{if(!['y','n'].includes(v)) throw new Error('Enter y or n.');})==='y');
   if (advanced) {
     for (const [key,setting] of Object.entries(settings)) {
-      if (['SITE_NAME','SITE_DESCRIPTION','SKIN'].includes(key)) continue;
+      if (['SITE_NAME','SITE_DESCRIPTION','SKIN','ENABLE_PINATA'].includes(key)) continue;
       config.vars[key]=await field(setting.label,String(config.vars[key]),setting.validate,undefined,true);
     }
     const enabled=await field('Enable workers.dev address? (y / n)',config.workers_dev===false?'n':'y',v=>{if(!['y','n'].includes(v)) throw new Error('Enter y or n.');},undefined,true);
@@ -257,6 +260,7 @@ export function ensureRemoteSecrets(config:WranglerConfig,run:Run,log:(message:s
     log('✓ Generated and registered COOKIE_SECRET securely.');
   } else log('✓ Existing COOKIE_SECRET preserved.');
   if (config.vars.ENABLE_PINATA==='1' && !secrets.some(s=>s.name==='PINATA_JWT')) {
+    pinataGuide(log);
     if (options.pinataToken) run(['secret','put','PINATA_JWT'],{env,input:options.pinataToken});
     else if (options.interactive) {
       log('Pinata uploads are enabled. Wrangler will ask for your token with hidden input.');
